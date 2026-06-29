@@ -2052,18 +2052,7 @@ local function GetOrCreateTrinketFrame(slotID)
             -- SetItemByID is only a fallback if no link is available.
             local link = GetInventoryItemLink("player", self._trinketSlot)
             if link then
-                -- Suppress the equipped-item comparison (shopping) tooltips: this is
-                -- our own already-equipped trinket, so a side-by-side compare is just
-                -- noise. Temporarily disable auto-compare while the tooltip is built,
-                -- then restore the user's setting.
-                local prevCompare = GetCVar("alwaysCompareItems")
-                if prevCompare and prevCompare ~= "0" then
-                    SetCVar("alwaysCompareItems", "0")
-                end
                 GameTooltip:SetHyperlink(link)
-                if prevCompare and prevCompare ~= "0" then
-                    SetCVar("alwaysCompareItems", prevCompare)
-                end
             else
                 GameTooltip:SetItemByID(itemID)
             end
@@ -2074,8 +2063,8 @@ local function GetOrCreateTrinketFrame(slotID)
                 EllesmereUI._repointTooltipAtCursor(GameTooltip)
             end
             GameTooltip:Show()
-            -- Belt-and-suspenders: hide any comparison tooltips that still slipped
-            -- through (e.g. when the compare modifier key is held down).
+            -- This is the player's own already-equipped trinket, so the side-by-side
+            -- equipped-item comparison is just noise -- hide the shopping tooltips.
             if GameTooltip_HideShoppingTooltips then
                 GameTooltip_HideShoppingTooltips(GameTooltip)
             end
