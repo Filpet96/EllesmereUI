@@ -7024,8 +7024,9 @@ eventFrame:RegisterEvent("CINEMATIC_STOP")
 eventFrame:RegisterEvent("STOP_MOVIE")
 -- Equipment changes: trinket/weapon swaps update trinket frames and reanchor
 eventFrame:RegisterEvent("PLAYER_EQUIPMENT_CHANGED")
--- Visibility option events: mounted, target, instance zone changes
+-- Visibility option events: mounted, dragonriding, target, instance zone changes
 eventFrame:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED")
+eventFrame:RegisterEvent("PLAYER_CAN_GLIDE_CHANGED")
 eventFrame:RegisterEvent("PLAYER_TARGET_CHANGED")
 -- Druid travel/flight/aquatic form needs an explicit re-check for the
 -- visHideMounted option. PLAYER_MOUNT_DISPLAY_CHANGED only fires for real
@@ -7182,10 +7183,11 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
         _CDMApplyVisibility()
         return
     end
-    if event == "PLAYER_MOUNT_DISPLAY_CHANGED" then
+    if event == "PLAYER_MOUNT_DISPLAY_CHANGED" or event == "PLAYER_CAN_GLIDE_CHANGED" then
         -- Defer to a clean execution context: the event handler chain can
         -- carry taint from other addons, which propagates into LayoutCDMBar
-        -- when a bar transitions from hidden to visible (visHideMounted).
+        -- when a bar transitions from hidden to visible (visHideMounted /
+        -- visHideDragonriding).
         C_Timer.After(0, _CDMApplyVisibility)
         return
     end

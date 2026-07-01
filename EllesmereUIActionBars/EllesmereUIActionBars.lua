@@ -6300,6 +6300,11 @@ function EAB:UpdateHousingVisibility()
                     return true
                 end
             end
+            if s.visHideDragonriding then
+                if EllesmereUI and EllesmereUI.IsPlayerSkyriding and EllesmereUI.IsPlayerSkyriding() then
+                    return true
+                end
+            end
             return false
         end
 
@@ -9035,8 +9040,11 @@ function EAB:FinishSetup()
         self:UpdateHousingVisibility()
     end)
 
-    -- Visibility option events: mounted, target, group changes
+    -- Visibility option events: mounted, dragonriding, target, group changes
     self:RegisterEvent("PLAYER_MOUNT_DISPLAY_CHANGED", function()
+        self:UpdateHousingVisibility()
+    end)
+    self:RegisterEvent("PLAYER_CAN_GLIDE_CHANGED", function()
         self:UpdateHousingVisibility()
     end)
     self:RegisterEvent("UPDATE_SHAPESHIFT_FORM", function()

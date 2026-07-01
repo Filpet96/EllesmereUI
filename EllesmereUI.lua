@@ -10852,6 +10852,8 @@ EllesmereUI.VIS_OPT_ITEMS = {
     { key = "visOnlyInstances",    label = "Only Show in Instances" },
     { key = "visHideHousing",      label = "Hide in Housing" },
     { key = "visHideMounted",      label = "Hide when Mounted" },
+    { key = "visHideDragonriding", label = "Hide when Dragonriding",
+      tooltip = "Hides this element while you are on a skyriding (glide-capable) mount, where Blizzard shows its vigor HUD." },
     { key = "visHideNoTarget",     label = "Hide without Target",
       tooltip = "*Blizzard's auto targeting (soft target) setting can cause brief flickering when your actual target dies but a soft-target is still active." },
     { key = "visHideNoEnemy",      label = "Hide without Enemy Target",
@@ -10895,11 +10897,23 @@ function EllesmereUI.IsPlayerMountedLike()
     return false
 end
 
+-- Runtime check: player is on a skyriding (glide-capable) mount. This is the
+-- state where Blizzard's dragonriding vigor HUD is active. Mirrors the skyriding
+-- HUD's own detection (mounted-like + GetGlidingInfo's canGlide flag).
+function EllesmereUI.IsPlayerSkyriding()
+    if not (EllesmereUI.IsPlayerMountedLike and EllesmereUI.IsPlayerMountedLike()) then return false end
+    if C_PlayerInfo and C_PlayerInfo.GetGlidingInfo then
+        local _, canGlide = C_PlayerInfo.GetGlidingInfo()
+        return canGlide == true
+    end
+    return false
+end
+
 -- Non-macro visibility subset: the options that CAN'T be expressed in a
 -- secure [macro] condition and must be evaluated in Lua. Used by secure
 -- action bar frames that delegate the macro-expressible options
 -- (target/combat/group) to their state-visibility driver and only need
--- Lua handling for these three.
+-- Lua handling for these.
 function EllesmereUI.CheckVisibilityOptionsNonMacro(opts)
     if not opts then return false end
 
@@ -10930,13 +10944,19 @@ function EllesmereUI.CheckVisibilityOptionsNonMacro(opts)
         if EllesmereUI.IsPlayerMountedLike and EllesmereUI.IsPlayerMountedLike() then return true end
     end
 
+    -- Hide when Dragonriding (on a skyriding/glide-capable mount, i.e. while the
+    -- Blizzard skyriding vigor HUD is on screen).
+    if opts.visHideDragonriding then
+        if EllesmereUI.IsPlayerSkyriding and EllesmereUI.IsPlayerSkyriding() then return true end
+    end
+
     return false
 end
 
 function EllesmereUI.CheckVisibilityOptions(opts)
     if not opts then return false end
 
-    -- Instances / housing / mounted (shared with secure-frame fast path).
+    -- Instances / housing / mounted / dragonriding (shared with secure-frame fast path).
     if EllesmereUI.CheckVisibilityOptionsNonMacro(opts) then return true end
 
     -- Hide without Target
