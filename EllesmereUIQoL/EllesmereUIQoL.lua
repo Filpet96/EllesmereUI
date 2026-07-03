@@ -2723,3 +2723,199 @@ do
     end)
 end
 
+-------------------------------------------------------------------------------
+--  Remove Transforms
+--  Automatically cancels cosmetic transform auras (profession gear, holiday
+--  costumes, toys, consumables) the moment they land on the player. Transforms
+--  gained during combat are left alone and cleared as soon as combat ends,
+--  since CancelUnitBuff is blocked in combat. Ported/adapted from Leatrix Plus.
+-------------------------------------------------------------------------------
+do
+    -- Per-item transform definitions -- the single source of truth, also shared
+    -- with the Transforms options tab via EllesmereUI.RemoveTransformsData. Each
+    -- item has a stable key, a category, a display label and the spell IDs it
+    -- covers. Items are opt-in: a transform is only removed while its own toggle
+    -- is enabled (stored in EllesmereUIDB.transformItems[key]). Fishing carries
+    -- no aura IDs here -- it is handled by the channel-stop watcher below.
+    local CATEGORY_ORDER = { "professions", "holiday", "toys", "items" }
+    local CATEGORY_LABEL = {
+        professions = "Profession Gear",
+        holiday     = "Holiday Costumes",
+        toys        = "Toys",
+        items       = "Consumables & Items",
+    }
+
+    local transformItems = {
+        -- Profession gear
+        { key = "blacksmithing",  cat = "professions", label = "Blacksmithing",  ids = { 388658 } },
+        { key = "jewelcrafting",  cat = "professions", label = "Jewelcrafting",  ids = { 394015 } },
+        { key = "tailoring",      cat = "professions", label = "Tailoring",      ids = { 391312 } },
+        { key = "engineering",    cat = "professions", label = "Engineering",    ids = { 394007 } },
+        { key = "enchanting",     cat = "professions", label = "Enchanting",     ids = { 394008 } },
+        { key = "alchemy",        cat = "professions", label = "Alchemy",        ids = { 394003 } },
+        { key = "inscription",    cat = "professions", label = "Inscription",    ids = { 394016 } },
+        { key = "leatherworking", cat = "professions", label = "Leatherworking", ids = { 394001 } },
+        { key = "herbalism",      cat = "professions", label = "Herbalism",      ids = { 394005 } },
+        { key = "mining",         cat = "professions", label = "Mining",         ids = { 394006 } },
+        { key = "skinning",       cat = "professions", label = "Skinning",       ids = { 394011 } },
+        { key = "cooking",        cat = "professions", label = "Cooking",        ids = { 391775 } },
+        { key = "fishing",        cat = "professions", label = "Fishing",        ids = {} }, -- 394009, special
+
+        -- Holiday costumes
+        { key = "lantern",    cat = "holiday", label = "Weighted Jack-o'-Lantern", ids = { 44212 } },
+        { key = "hallowed",   cat = "holiday", label = "Hallowed Wand", ids = {
+            172010, 218132, 191703, 24732, 191210, 172015, 24735, 24736, 191698, 191700,
+            172008, 24712, 24713, 191701, 191211, 24710, 24711, 191686, 191688, 24708,
+            24709, 173958, 173959, 191682, 191683, 24723, 191702, 172003, 172020, 191208, 24740,
+        } },
+        { key = "noblebunny", cat = "holiday", label = "Noblegarden Bunny", ids = { 61734, 61716 } },
+        { key = "turkey",     cat = "holiday", label = "Pilgrim's Turkey", ids = { 61781 } },
+
+        -- Toys
+        { key = "aqir",       cat = "toys", label = "Aqir Egg Cluster",          ids = { 318452 } },
+        { key = "atomic",     cat = "toys", label = "Atomically Recalibrator",   ids = { 399502 } },
+        { key = "atomgoblin", cat = "toys", label = "Atomically Regoblinator",   ids = { 1215363 } },
+        { key = "blight",     cat = "toys", label = "Detoxified Blight Grenade", ids = { 290224 } },
+        { key = "witch",      cat = "toys", label = "Lucille's Sewing Needle",   ids = { 279509 } },
+        { key = "spraybots",  cat = "toys", label = "Spraybots",                 ids = { 301892, 301893, 301894 } },
+
+        -- Consumables & items
+        { key = "pickaxe",      cat = "items", label = "Cursed Pickaxe",      ids = { 454405 } },
+        { key = "noggenfogger", cat = "items", label = "Noggenfogger Elixir", ids = { 16593, 1223630, 16595, 1223629, 1223631 } },
+        { key = "prism",        cat = "items", label = "Reflecting Prism",    ids = { 163267 } },
+    }
+
+    -- Runtime lookup: [spellID] = true for every enabled item.
+    local cTable = {}
+
+    local function ItemEnabled(key)
+        local t = EllesmereUIDB and EllesmereUIDB.transformItems
+        return (t and t[key] == true) or false
+    end
+
+    local function RebuildList()
+        wipe(cTable)
+        for _, item in ipairs(transformItems) do
+            if ItemEnabled(item.key) then
+                for _, id in ipairs(item.ids) do
+                    cTable[id] = true
+                end
+            end
+        end
+    end
+
+    local spellFrame = CreateFrame("Frame")
+
+    -- Cancel any matching buffs that are currently active. Out of combat we
+    -- cancel immediately; when force is true (combat just ended) we skip the
+    -- combat guard since CancelUnitBuff is now allowed again.
+    local function CancelMatching(force)
+        if not (C_UnitAuras and C_UnitAuras.GetBuffDataByIndex) then return end
+        for i = 1, 40 do
+            local data = C_UnitAuras.GetBuffDataByIndex("player", i)
+            if data then
+                local spellID = data.spellId
+                if spellID and not (issecretvalue and issecretvalue(spellID)) and cTable[spellID] then
+                    if force or not UnitAffectingCombat("player") then
+                        CancelUnitBuff("player", i)
+                    end
+                end
+            end
+        end
+    end
+
+    spellFrame:SetScript("OnEvent", function(self, event, unit, updatedAuras)
+        if event == "UNIT_AURA" then
+            if not updatedAuras then return end
+            if updatedAuras.isFullUpdate then
+                CancelMatching(false)
+            elseif updatedAuras.addedAuras then
+                for _, aura in ipairs(updatedAuras.addedAuras) do
+                    local spellID = aura.spellId
+                    if spellID and not (issecretvalue and issecretvalue(spellID)) and cTable[spellID] then
+                        CancelMatching(false)
+                        break
+                    end
+                end
+            end
+        elseif event == "PLAYER_REGEN_ENABLED" then
+            -- Combat just ended: clear anything that landed while we were locked.
+            CancelMatching(true)
+        end
+    end)
+
+    -- Fishing is a special case: the buff (Fishing For Attention, 394009) is
+    -- applied while the Fishing channel (131476) is active and the loot frame
+    -- stays open, so it is removed when the channel stops rather than on aura
+    -- add. Gated behind the profession-gear category.
+    local fishFrame = CreateFrame("Frame")
+    fishFrame:SetScript("OnEvent", function(self, event, unit, void, spellID)
+        if not (EllesmereUIDB and EllesmereUIDB.removeTransforms) then return end
+        if not ItemEnabled("fishing") then return end
+        if issecretvalue and issecretvalue(spellID) then return end
+        if spellID ~= 131476 then return end
+        if not (C_UnitAuras and C_UnitAuras.GetBuffDataByIndex) then return end
+        for i = 1, 40 do
+            local data = C_UnitAuras.GetBuffDataByIndex("player", i)
+            if data then
+                local sid = data.spellId
+                if sid and not (issecretvalue and issecretvalue(sid))
+                    and sid == 394009 and not UnitAffectingCombat("player") then
+                    CancelUnitBuff("player", i)
+                end
+            end
+        end
+    end)
+
+    -- (Re)decide which events are hooked. Nothing is registered unless the
+    -- feature is on AND something is actually selected, so a disabled feature
+    -- (or one with no transforms ticked) costs literally zero per-frame work --
+    -- the UNIT_AURA / combat / channel handlers are simply never installed.
+    local function ApplyRemoveTransforms()
+        RebuildList()
+        local active = EllesmereUIDB and EllesmereUIDB.removeTransforms
+
+        -- Aura watcher: only while at least one spell ID is in the lookup.
+        if active and next(cTable) ~= nil then
+            CancelMatching(false)
+            spellFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            spellFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        else
+            spellFrame:UnregisterEvent("UNIT_AURA")
+            spellFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+        end
+
+        -- Fishing watcher: only while the Fishing item is enabled.
+        if active and ItemEnabled("fishing") then
+            fishFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
+        else
+            fishFrame:UnregisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
+        end
+    end
+    EllesmereUI._applyRemoveTransforms = ApplyRemoveTransforms
+    EllesmereUI._rebuildRemoveTransforms = ApplyRemoveTransforms
+
+    -- Shared with the Transforms options tab (EUI_QoL_Transforms_Options.lua).
+    EllesmereUI.RemoveTransformsData = {
+        order  = CATEGORY_ORDER,
+        labels = CATEGORY_LABEL,
+        items  = transformItems,
+    }
+    EllesmereUI.GetTransformItemEnabled = ItemEnabled
+    EllesmereUI.SetTransformItemEnabled = function(key, v)
+        if not EllesmereUIDB then EllesmereUIDB = {} end
+        EllesmereUIDB.transformItems = EllesmereUIDB.transformItems or {}
+        EllesmereUIDB.transformItems[key] = v and true or false
+        -- Re-evaluate which events are hooked (enabling the first item installs
+        -- the watcher; disabling the last one removes it) and sweep immediately.
+        ApplyRemoveTransforms()
+    end
+
+    local boot = CreateFrame("Frame")
+    boot:RegisterEvent("PLAYER_LOGIN")
+    boot:SetScript("OnEvent", function(self)
+        self:UnregisterAllEvents()
+        ApplyRemoveTransforms()
+    end)
+end
+
