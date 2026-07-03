@@ -9341,10 +9341,11 @@ initFrame:SetScript("OnEvent", function(self)
                 { key = "crowdControl",      label = "Crowd Control",      tooltip = "Shows only crowd-control auras" },
                 { key = "bigDefensive",      label = "Big Defensive",      tooltip = "Shows only major defensive cooldowns" },
                 { key = "externalDefensive", label = "External Defensive", tooltip = "Shows only external defensive cooldowns cast on the unit" },
+                { key = "important",         label = "Important Only",     tooltip = "Shows only auras Blizzard flags as important (encounter/boss debuffs); hides clutter like stagger, lust/sated, etc." },
                 { key = "ownOnly",           label = "Own Only",           tooltip = "Shows only the Buffs/Debuffs you apply" },
             }
-            local BUFF_FILTER_KEYS   = { ownOnly = "onlyPlayerBuffs",   raidFrames = "buffRaid",   crowdControl = "buffCrowdControl",   bigDefensive = "buffBigDefensive",   externalDefensive = "buffExternalDefensive" }
-            local DEBUFF_FILTER_KEYS = { ownOnly = "onlyPlayerDebuffs", raidFrames = "debuffRaid", crowdControl = "debuffCrowdControl", bigDefensive = "debuffBigDefensive", externalDefensive = "debuffExternalDefensive" }
+            local BUFF_FILTER_KEYS   = { ownOnly = "onlyPlayerBuffs",   raidFrames = "buffRaid",   crowdControl = "buffCrowdControl",   bigDefensive = "buffBigDefensive",   externalDefensive = "buffExternalDefensive",   important = "buffImportant" }
+            local DEBUFF_FILTER_KEYS = { ownOnly = "onlyPlayerDebuffs", raidFrames = "debuffRaid", crowdControl = "debuffCrowdControl", bigDefensive = "debuffBigDefensive", externalDefensive = "debuffExternalDefensive", important = "debuffImportant" }
             -- "Own Only" is not offered for the PLAYER's debuffs (you rarely apply
             -- your own debuffs to yourself); any stale onlyPlayerDebuffs value is
             -- ignored at runtime (see ns.EUIAuraFilter).
@@ -12289,9 +12290,10 @@ initFrame:SetScript("OnEvent", function(self)
                     { key = "crowdControl",      label = "Crowd Control",      tooltip = "Shows only crowd-control auras" },
                     { key = "bigDefensive",      label = "Big Defensive",      tooltip = "Shows only major defensive cooldowns" },
                     { key = "externalDefensive", label = "External Defensive", tooltip = "Shows only external defensive cooldowns cast on the unit" },
+                    { key = "important",         label = "Important Only",     tooltip = "Shows only auras Blizzard flags as important (encounter/boss debuffs); hides clutter like stagger, lust/sated, etc." },
                     { key = "ownOnly",           label = "Own Only",           tooltip = "Shows only the Debuffs you apply" },
                 }
-                local DEBUFF_FILTER_KEYS = { ownOnly = "onlyPlayerDebuffs", raidFrames = "debuffRaid", crowdControl = "debuffCrowdControl", bigDefensive = "debuffBigDefensive", externalDefensive = "debuffExternalDefensive" }
+                local DEBUFF_FILTER_KEYS = { ownOnly = "onlyPlayerDebuffs", raidFrames = "debuffRaid", crowdControl = "debuffCrowdControl", bigDefensive = "debuffBigDefensive", externalDefensive = "debuffExternalDefensive", important = "debuffImportant" }
                 -- Buff/Debuff Text Size: cooldown-text size sliders, each gated by
                 -- the "Show Duration" toggle at the top of its own Duration & Stack
                 -- cog (which also holds Duration X/Y + Stack size/position/X/Y).

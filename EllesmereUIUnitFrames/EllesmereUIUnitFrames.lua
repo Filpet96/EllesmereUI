@@ -5322,17 +5322,19 @@ end
 
 -- Resolve the per-unit classification toggles for an aura element's base
 -- ("HELPFUL" buffs / "HARMFUL" debuffs) from its unit settings table. Returns
--- five flags in order: ownOnly, raidFrames, crowdControl, bigDefensive,
--- externalDefensive. Shared by ComposeAuraFilter (signature) and the runtime
--- FilterAura so new classifications only need adding in one place. On ns (not a
--- local) to stay clear of the main-chunk 200-local cap.
+-- six flags in order: ownOnly, raidFrames, crowdControl, bigDefensive,
+-- externalDefensive, important. Shared by ComposeAuraFilter (signature) and the
+-- runtime FilterAura so new classifications only need adding in one place. On ns
+-- (not a local) to stay clear of the main-chunk 200-local cap.
 function ns.ResolveAuraFlags(base, settings)
     if base == "HELPFUL" then
         return settings.onlyPlayerBuffs, settings.buffRaid,
-               settings.buffCrowdControl, settings.buffBigDefensive, settings.buffExternalDefensive
+               settings.buffCrowdControl, settings.buffBigDefensive, settings.buffExternalDefensive,
+               settings.buffImportant
     end
     return settings.onlyPlayerDebuffs, settings.debuffRaid,
-           settings.debuffCrowdControl, settings.debuffBigDefensive, settings.debuffExternalDefensive
+           settings.debuffCrowdControl, settings.debuffBigDefensive, settings.debuffExternalDefensive,
+           settings.debuffImportant
 end
 
 -- Build a SIGNATURE string from the per-unit filter toggles. This is no longer
@@ -5340,12 +5342,13 @@ end
 -- detection key so a ForceUpdate fires when a toggle flips. The real fetch uses
 -- the broad base filter + the per-aura OR FilterAura below.
 function ns.ComposeAuraFilter(base, settings)
-    local own, raid, cc, bigDef, extDef = ns.ResolveAuraFlags(base, settings)
+    local own, raid, cc, bigDef, extDef, imp = ns.ResolveAuraFlags(base, settings)
     if own    then base = base .. "|PLAYER" end
     if raid   then base = base .. "|RAID" end
     if cc     then base = base .. "|CROWD_CONTROL" end
     if bigDef then base = base .. "|BIG_DEFENSIVE" end
     if extDef then base = base .. "|EXTERNAL_DEFENSIVE" end
+    if imp    then base = base .. "|IMPORTANT" end
     return base
 end
 
@@ -5391,7 +5394,7 @@ function ns.EUIAuraFilter(element, unit, data, filter)
     -- flag for player + HARMFUL so a stale onlyPlayerDebuffs value has no effect.
     local usePlayer = f and f.player
     if usePlayer and unit == "player" and filter == "HARMFUL" then usePlayer = false end
-    if not f or not (usePlayer or f.raid or f.cc or f.bigDef or f.extDef) then return true end
+    if not f or not (usePlayer or f.raid or f.cc or f.bigDef or f.extDef or f.imp) then return true end
     local iid = data.auraInstanceID
     if not iid then return true end
     if usePlayer and data.isPlayerAura then return true end
@@ -5401,6 +5404,7 @@ function ns.EUIAuraFilter(element, unit, data, filter)
         if f.cc     and not IsAuraFilteredOut(unit, iid, base .. "|CROWD_CONTROL") then return true end
         if f.bigDef and not IsAuraFilteredOut(unit, iid, base .. "|BIG_DEFENSIVE") then return true end
         if f.extDef and not IsAuraFilteredOut(unit, iid, base .. "|EXTERNAL_DEFENSIVE") then return true end
+        if f.imp    and not IsAuraFilteredOut(unit, iid, base .. "|IMPORTANT") then return true end
     end
     return false
 end
@@ -5413,7 +5417,7 @@ function ns.ApplyEUIAuraFilter(element, base, settings)
     element.FilterAura = ns.EUIAuraFilter
     local f = element._euiAuraFlags
     if not f then f = {}; element._euiAuraFlags = f end
-    f.player, f.raid, f.cc, f.bigDef, f.extDef = ns.ResolveAuraFlags(base, settings)
+    f.player, f.raid, f.cc, f.bigDef, f.extDef, f.imp = ns.ResolveAuraFlags(base, settings)
     f.showLust = (base == "HARMFUL") and settings.showLustDebuff
 end
 
