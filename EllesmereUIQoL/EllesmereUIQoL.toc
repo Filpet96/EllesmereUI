@@ -26,5 +26,4 @@ EUI_QoL_Cursor_Options.lua
 EUI_QoL_BattleRes_Options.lua
 EUI_QoL_AutoLogging_Options.lua
 EUI_QoL_Shifter_Options.lua
-EUI_QoL_Transforms_Options.lua
 EUI_UpgradeCalc_Options.lua
