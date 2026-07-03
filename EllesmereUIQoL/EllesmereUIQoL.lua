@@ -2724,19 +2724,16 @@ do
 end
 
 -------------------------------------------------------------------------------
---  Remove Transforms
---  Automatically cancels cosmetic transform auras (profession gear, holiday
---  costumes, toys, consumables) the moment they land on the player. Transforms
---  gained during combat are left alone and cleared as soon as combat ends,
---  since CancelUnitBuff is blocked in combat. Ported/adapted from Leatrix Plus.
+--  Hide Item Transforms
+--  Cancels cosmetic transform auras (profession gear, holiday costumes, toys,
+--  consumables) as soon as they land on the player. CancelUnitBuff is blocked
+--  during combat, so transforms gained mid-fight are swept on the next
+--  PLAYER_REGEN_ENABLED. The fishing outfit aura persists while the fishing
+--  channel runs, so it is cleared when the channel stops instead.
+--  Zero cost when idle: no events are registered unless the master toggle is
+--  on AND at least one transform is still included.
 -------------------------------------------------------------------------------
 do
-    -- Per-item transform definitions -- the single source of truth, also shared
-    -- with the Transforms options tab via EllesmereUI.RemoveTransformsData. Each
-    -- item has a stable key, a category, a display label and the spell IDs it
-    -- covers. Items are opt-in: a transform is only removed while its own toggle
-    -- is enabled (stored in EllesmereUIDB.transformItems[key]). Fishing carries
-    -- no aura IDs here -- it is handled by the channel-stop watcher below.
     local CATEGORY_ORDER = { "professions", "holiday", "toys", "items" }
     local CATEGORY_LABEL = {
         professions = "Profession Gear",
@@ -2745,7 +2742,9 @@ do
         items       = "Consumables & Items",
     }
 
-    local transformItems = {
+    -- Each entry: stable settings key, category, display label, aura spell IDs.
+    -- Fishing lists no aura IDs -- the channel-stop watcher below owns it.
+    local TRANSFORMS = {
         -- Profession gear
         { key = "blacksmithing",  cat = "professions", label = "Blacksmithing",  ids = { 388658 } },
         { key = "jewelcrafting",  cat = "professions", label = "Jewelcrafting",  ids = { 394015 } },
@@ -2758,8 +2757,8 @@ do
         { key = "herbalism",      cat = "professions", label = "Herbalism",      ids = { 394005 } },
         { key = "mining",         cat = "professions", label = "Mining",         ids = { 394006 } },
         { key = "skinning",       cat = "professions", label = "Skinning",       ids = { 394011 } },
-        { key = "cooking",        cat = "professions", label = "Cooking",        ids = { 391775 } },
-        { key = "fishing",        cat = "professions", label = "Fishing",        ids = {} }, -- 394009, special
+        { key = "cooking",        cat = "professions", label = "Cooking (Chef's Hat)", ids = { 391775 } },
+        { key = "fishing",        cat = "professions", label = "Fishing",        ids = {} },
 
         -- Holiday costumes
         { key = "lantern",    cat = "holiday", label = "Weighted Jack-o'-Lantern", ids = { 44212 } },
@@ -2785,82 +2784,79 @@ do
         { key = "prism",        cat = "items", label = "Reflecting Prism",    ids = { 163267 } },
     }
 
-    -- Runtime lookup: [spellID] = true for every enabled item.
+    -- Runtime lookup: [spellID] = true for every included transform.
     local cTable = {}
 
+    -- Transforms are included by default; the picker stores false to exclude.
     local function ItemEnabled(key)
-        local t = EllesmereUIDB and EllesmereUIDB.transformItems
-        return (t and t[key] == true) or false
+        local t = EllesmereUIDB and EllesmereUIDB.hideTransformItems
+        if t and t[key] == false then return false end
+        return true
     end
 
     local function RebuildList()
         wipe(cTable)
-        for _, item in ipairs(transformItems) do
+        if not (EllesmereUIDB and EllesmereUIDB.hideTransforms) then return end
+        for _, item in ipairs(TRANSFORMS) do
             if ItemEnabled(item.key) then
-                for _, id in ipairs(item.ids) do
-                    cTable[id] = true
-                end
+                for _, id in ipairs(item.ids) do cTable[id] = true end
             end
         end
     end
 
-    local spellFrame = CreateFrame("Frame")
+    local auraFrame = CreateFrame("Frame")
 
-    -- Cancel any matching buffs that are currently active. Out of combat we
-    -- cancel immediately; when force is true (combat just ended) we skip the
-    -- combat guard since CancelUnitBuff is now allowed again.
+    -- Sweep current buffs, canceling any included transform. Descending so a
+    -- cancel (which shifts later buff indices down) cannot skip a match.
     local function CancelMatching(force)
         if not (C_UnitAuras and C_UnitAuras.GetBuffDataByIndex) then return end
-        for i = 1, 40 do
+        if not force and UnitAffectingCombat("player") then return end
+        for i = 40, 1, -1 do
             local data = C_UnitAuras.GetBuffDataByIndex("player", i)
             if data then
                 local spellID = data.spellId
                 if spellID and not (issecretvalue and issecretvalue(spellID)) and cTable[spellID] then
-                    if force or not UnitAffectingCombat("player") then
-                        CancelUnitBuff("player", i)
-                    end
+                    CancelUnitBuff("player", i)
                 end
             end
         end
     end
 
-    spellFrame:SetScript("OnEvent", function(self, event, unit, updatedAuras)
-        if event == "UNIT_AURA" then
-            if not updatedAuras then return end
-            if updatedAuras.isFullUpdate then
-                CancelMatching(false)
-            elseif updatedAuras.addedAuras then
-                for _, aura in ipairs(updatedAuras.addedAuras) do
-                    local spellID = aura.spellId
-                    if spellID and not (issecretvalue and issecretvalue(spellID)) and cTable[spellID] then
-                        CancelMatching(false)
-                        break
-                    end
+    auraFrame:SetScript("OnEvent", function(_, event, _, updateInfo)
+        if event == "PLAYER_REGEN_ENABLED" then
+            -- Combat just ended: clear anything that landed while locked.
+            CancelMatching(true)
+            return
+        end
+        -- UNIT_AURA (player only, via RegisterUnitEvent)
+        if not updateInfo then return end
+        if updateInfo.isFullUpdate then
+            CancelMatching(false)
+        elseif updateInfo.addedAuras then
+            for _, aura in ipairs(updateInfo.addedAuras) do
+                local spellID = aura.spellId
+                if spellID and not (issecretvalue and issecretvalue(spellID)) and cTable[spellID] then
+                    CancelMatching(false)
+                    break
                 end
             end
-        elseif event == "PLAYER_REGEN_ENABLED" then
-            -- Combat just ended: clear anything that landed while we were locked.
-            CancelMatching(true)
         end
     end)
 
-    -- Fishing is a special case: the buff (Fishing For Attention, 394009) is
-    -- applied while the Fishing channel (131476) is active and the loot frame
-    -- stays open, so it is removed when the channel stops rather than on aura
-    -- add. Gated behind the profession-gear category.
+    -- Fishing outfit: aura 394009 sticks while the fishing channel (131476)
+    -- runs, so it is cleared when the channel stops. Only registered while the
+    -- feature is on and the Fishing entry is included.
     local fishFrame = CreateFrame("Frame")
-    fishFrame:SetScript("OnEvent", function(self, event, unit, void, spellID)
-        if not (EllesmereUIDB and EllesmereUIDB.removeTransforms) then return end
-        if not ItemEnabled("fishing") then return end
+    fishFrame:SetScript("OnEvent", function(_, _, _, _, spellID)
         if issecretvalue and issecretvalue(spellID) then return end
         if spellID ~= 131476 then return end
+        if UnitAffectingCombat("player") then return end
         if not (C_UnitAuras and C_UnitAuras.GetBuffDataByIndex) then return end
-        for i = 1, 40 do
+        for i = 40, 1, -1 do
             local data = C_UnitAuras.GetBuffDataByIndex("player", i)
             if data then
                 local sid = data.spellId
-                if sid and not (issecretvalue and issecretvalue(sid))
-                    and sid == 394009 and not UnitAffectingCombat("player") then
+                if sid and not (issecretvalue and issecretvalue(sid)) and sid == 394009 then
                     CancelUnitBuff("player", i)
                 end
             end
@@ -2868,54 +2864,53 @@ do
     end)
 
     -- (Re)decide which events are hooked. Nothing is registered unless the
-    -- feature is on AND something is actually selected, so a disabled feature
-    -- (or one with no transforms ticked) costs literally zero per-frame work --
-    -- the UNIT_AURA / combat / channel handlers are simply never installed.
-    local function ApplyRemoveTransforms()
+    -- feature is on AND something is actually included, so a disabled feature
+    -- costs zero per-frame work -- the handlers are simply never installed.
+    local function ApplyHideTransforms()
         RebuildList()
-        local active = EllesmereUIDB and EllesmereUIDB.removeTransforms
+        local on = EllesmereUIDB and EllesmereUIDB.hideTransforms
 
-        -- Aura watcher: only while at least one spell ID is in the lookup.
-        if active and next(cTable) ~= nil then
-            CancelMatching(false)
-            spellFrame:RegisterUnitEvent("UNIT_AURA", "player")
-            spellFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+        if on and next(cTable) ~= nil then
+            auraFrame:RegisterUnitEvent("UNIT_AURA", "player")
+            auraFrame:RegisterEvent("PLAYER_REGEN_ENABLED")
+            CancelMatching(false)  -- immediate sweep of anything already active
         else
-            spellFrame:UnregisterEvent("UNIT_AURA")
-            spellFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
+            auraFrame:UnregisterEvent("UNIT_AURA")
+            auraFrame:UnregisterEvent("PLAYER_REGEN_ENABLED")
         end
 
-        -- Fishing watcher: only while the Fishing item is enabled.
-        if active and ItemEnabled("fishing") then
+        if on and ItemEnabled("fishing") then
             fishFrame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP", "player")
         else
             fishFrame:UnregisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")
         end
     end
-    EllesmereUI._applyRemoveTransforms = ApplyRemoveTransforms
-    EllesmereUI._rebuildRemoveTransforms = ApplyRemoveTransforms
+    EllesmereUI._applyHideTransforms = ApplyHideTransforms
 
-    -- Shared with the Transforms options tab (EUI_QoL_Transforms_Options.lua).
-    EllesmereUI.RemoveTransformsData = {
+    -- Shared with the options picker popup (EUI_QoL_Options.lua).
+    EllesmereUI.HideTransformsData = {
         order  = CATEGORY_ORDER,
         labels = CATEGORY_LABEL,
-        items  = transformItems,
+        items  = TRANSFORMS,
     }
-    EllesmereUI.GetTransformItemEnabled = ItemEnabled
-    EllesmereUI.SetTransformItemEnabled = function(key, v)
+    EllesmereUI.GetHideTransformItem = ItemEnabled
+    EllesmereUI.SetHideTransformItem = function(key, enabled)
         if not EllesmereUIDB then EllesmereUIDB = {} end
-        EllesmereUIDB.transformItems = EllesmereUIDB.transformItems or {}
-        EllesmereUIDB.transformItems[key] = v and true or false
-        -- Re-evaluate which events are hooked (enabling the first item installs
-        -- the watcher; disabling the last one removes it) and sweep immediately.
-        ApplyRemoveTransforms()
+        EllesmereUIDB.hideTransformItems = EllesmereUIDB.hideTransformItems or {}
+        -- Included is the default -- store only exclusions, keeping the table sparse.
+        if enabled then
+            EllesmereUIDB.hideTransformItems[key] = nil
+        else
+            EllesmereUIDB.hideTransformItems[key] = false
+        end
+        ApplyHideTransforms()
     end
 
     local boot = CreateFrame("Frame")
     boot:RegisterEvent("PLAYER_LOGIN")
     boot:SetScript("OnEvent", function(self)
         self:UnregisterAllEvents()
-        ApplyRemoveTransforms()
+        ApplyHideTransforms()
     end)
 end
 
