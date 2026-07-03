@@ -38,6 +38,9 @@ local BAGS_DEFAULTS = {
         enableGoldTracking    = true,
         detachReagentBag      = false,
         enhancedBags          = true,
+        bagDesaturateJunkItems = false,
+        bagDisplayBindType    = false,
+        bagBindTypeFontSize   = 11,
     },
 }
 local db = EllesmereUI.Lite.NewDB("EllesmereUIBagsDB", BAGS_DEFAULTS)
@@ -401,7 +404,6 @@ initFrame:SetScript("OnEvent", function(self)
                 end
             end
 
-
             -- Item Count Text Size | Item Level Text Size
             _, h = W:DualRow(parent, y,
                 { type="slider", text="Item Count Text Size", min=8, max=16, step=1,
@@ -418,6 +420,26 @@ initFrame:SetScript("OnEvent", function(self)
                   getValue=function() return db.profile.itemlevelFontSize or 12 end,
                   setValue=function(v)
                       db.profile.itemlevelFontSize = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
+                      local bank = _G.EUI_BankFrame
+                      if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
+                  end }
+            ); y = y - h
+
+            -- Show BoE / WuE | BoE / WuE Text Size
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Show BoE / WuE",
+                  tooltip="Display Binds on Equipped / Warbound until Equipped on equipment items in the inventory.",
+                  getValue=function() return db.profile.bagDisplayBindType ~= false end,
+                  setValue=function(v)
+                      db.profile.bagDisplayBindType = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                { type="slider", text="BoE / WuE Text Size", min=8, max=16, step=1,
+                  tooltip="Font size for Binds on Equipped / Warbound until Equipped text on equipment items.",
+                  getValue=function() return db.profile.bagBindTypeFontSize or 11 end,
+                  setValue=function(v)
+                      db.profile.bagBindTypeFontSize = v
                       if _G.EUI_Bags and _G.EUI_Bags.RefreshTextSizes then _G.EUI_Bags:RefreshTextSizes() end
                       local bank = _G.EUI_BankFrame
                       if bank and bank.RefreshTextSizes then bank:RefreshTextSizes() end
@@ -626,6 +648,18 @@ initFrame:SetScript("OnEvent", function(self)
                       db.profile.bagHideRandomize = v
                       if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
                   end }
+            ); y = y - h
+
+            -- Desaturate Junk Items
+            _, h = W:DualRow(parent, y,
+                { type="toggle", text="Desaturate Junk Items",
+                  tooltip="Display junk items in a greyed-out style.",
+                  getValue=function() return db.profile.bagDesaturateJunkItems == true end,
+                  setValue=function(v)
+                      db.profile.bagDesaturateJunkItems = v
+                      if _G.EUI_Bags and _G.EUI_Bags.RefreshInventory then _G.EUI_Bags:RefreshInventory() end
+                  end },
+                { type="label", text="" }
             ); y = y - h
 
             _, h = W:Spacer(parent, y, 20); y = y - h
