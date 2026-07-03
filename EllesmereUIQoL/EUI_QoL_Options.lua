@@ -10,6 +10,7 @@ local PAGE_BREZ     = "BattleRes"
 local PAGE_AUTOLOG  = "Keys, Logs & Brez"
 local PAGE_UPGCALC  = "Upgrade Calc"
 local PAGE_SHIFTER  = "Shifter"
+local PAGE_TRANSFORMS = "Transforms"
 
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -1698,14 +1699,60 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
+        -- Remove Transforms (left, with category cog) | (empty)
+        local transformRow
+        transformRow, h = W:DualRow(parent, y,
+            { type="toggle", text="Remove Transforms",
+              tooltip="Automatically removes certain cosmetic transforms when they are applied to your character, such as profession gear, holiday costumes (Weighted Jack-o'-Lantern, Hallowed Wand), toys and consumables.\n\nUse the cog to open the Transforms tab, where you can pick exactly which transforms are removed. Transforms applied during combat are removed as soon as combat ends.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.removeTransforms or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.removeTransforms = v
+                  if EllesmereUI._applyRemoveTransforms then
+                      EllesmereUI._applyRemoveTransforms()
+                  end
+                  EllesmereUI:RefreshPage()
+              end },
+            { type="label", text="" }
+        );  y = y - h
+
+        -- Cog on Remove Transforms (left region): jumps to the Transforms tab
+        -- where individual transforms and category "select all" toggles live.
+        do
+            local leftRgn = transformRow._leftRegion
+
+            local transCogBtn = CreateFrame("Button", nil, leftRgn)
+            transCogBtn:SetSize(26, 26)
+            transCogBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -9, 0)
+            leftRgn._lastInline = transCogBtn
+            transCogBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
+            transCogBtn:SetAlpha(0.4)
+            local transCogTex = transCogBtn:CreateTexture(nil, "OVERLAY")
+            transCogTex:SetAllPoints()
+            transCogTex:SetTexture(EllesmereUI.COGS_ICON)
+            transCogBtn:SetScript("OnEnter", function(self)
+                self:SetAlpha(0.7)
+                EllesmereUI.ShowWidgetTooltip(self, "Open the Transforms tab to choose which transforms are removed.")
+            end)
+            transCogBtn:SetScript("OnLeave", function(self)
+                self:SetAlpha(0.4)
+                EllesmereUI.HideWidgetTooltip()
+            end)
+            transCogBtn:SetScript("OnClick", function()
+                if EllesmereUI.SelectPage then EllesmereUI:SelectPage(PAGE_TRANSFORMS) end
+            end)
+        end
+
         return math.abs(y)
     end
 
     EllesmereUI:RegisterModule("EllesmereUIQoL", {
         title       = "Quality of Life",
         description = "Quality of life features and custom cursor.",
-        pages       = { PAGE_QOL, PAGE_CURSOR, PAGE_AUTOLOG, PAGE_UPGCALC, PAGE_SHIFTER },
-        searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "shifter", "move", "drag", "position", "demodal", "drift" },
+        pages       = { PAGE_QOL, PAGE_CURSOR, PAGE_AUTOLOG, PAGE_UPGCALC, PAGE_SHIFTER, PAGE_TRANSFORMS },
+        searchTerms = { "brez", "bres", "battle res", "combat res", "cursor", "macro", "fps", "logging", "combat log", "warcraft logs", "upgrade", "ilvl", "item level", "crest", "upgrade calculator", "shifter", "move", "drag", "position", "demodal", "drift", "transform", "transforms", "costume", "disguise", "jack-o'-lantern", "hallowed wand", "noggenfogger" },
         buildPage   = function(pageName, parent, yOffset)
             if pageName == PAGE_QOL then
                 return BuildQoLPage(pageName, parent, yOffset)
@@ -1721,6 +1768,9 @@ initFrame:SetScript("OnEvent", function(self)
             end
             if pageName == PAGE_SHIFTER and _G._EUI_BuildShifterPage then
                 return _G._EUI_BuildShifterPage(pageName, parent, yOffset)
+            end
+            if pageName == PAGE_TRANSFORMS and _G._EUI_BuildTransformsPage then
+                return _G._EUI_BuildTransformsPage(pageName, parent, yOffset)
             end
         end,
         onReset = function()
@@ -1755,6 +1805,13 @@ initFrame:SetScript("OnEvent", function(self)
                 EllesmereUIDB.groupDeathAlertPos = nil
                 EllesmereUIDB.groupDeathSound = nil      -- legacy boolean (pre-dropdown)
                 EllesmereUIDB.groupDeathSoundKey = nil
+                EllesmereUIDB.removeTransforms = false
+                EllesmereUIDB.transformItems = nil
+                -- Obsolete category keys from the earlier cog-popup version.
+                EllesmereUIDB.removeTransProfessions = nil
+                EllesmereUIDB.removeTransHoliday = nil
+                EllesmereUIDB.removeTransToys = nil
+                EllesmereUIDB.removeTransItems = nil
             end
             EllesmereUIDB.autoLogging = nil
             if _G._EUI_ResetUpgradeCalc then _G._EUI_ResetUpgradeCalc() end
@@ -1762,6 +1819,7 @@ initFrame:SetScript("OnEvent", function(self)
             if EllesmereUI._applyHideBlizzardPartyFrame then EllesmereUI._applyHideBlizzardPartyFrame() end
             if EllesmereUI._applyHideErrorMessages then EllesmereUI._applyHideErrorMessages() end
             if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
+            if EllesmereUI._applyRemoveTransforms then EllesmereUI._applyRemoveTransforms() end
             if EllesmereUI._applyQuickSignup then EllesmereUI._applyQuickSignup() end
             if EllesmereUI._applyPersistSignupNote then EllesmereUI._applyPersistSignupNote() end
             EllesmereUI:InvalidatePageCache()
