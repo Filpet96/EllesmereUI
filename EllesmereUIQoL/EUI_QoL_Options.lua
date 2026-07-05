@@ -590,7 +590,8 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
-        -- Row 7: Announce Group Deaths (left, with Text Size cog)
+        -- Row 7: Announce Group Deaths (left, with Text Size cog) | Hide Item
+        -- Transforms (right, with picker cog)
         local deathRow
         deathRow, h = W:DualRow(parent, y,
             { type="toggle", text="Announce Group Deaths",
@@ -604,7 +605,19 @@ initFrame:SetScript("OnEvent", function(self)
                   if EllesmereUI._applyAnnounceGroupDeaths then EllesmereUI._applyAnnounceGroupDeaths() end
                   EllesmereUI:RefreshPage()
               end },
-            { type="label", text="" }
+            { type="toggle", text="Hide Item Transforms (ex: Chef's Hat)",
+              tooltip="Automatically removes cosmetic transforms when they are applied to you, such as profession gear, holiday costumes, toys and consumables. Use the cog to pick exactly which transforms are removed. Transforms applied during combat are removed when combat ends.",
+              getValue=function()
+                  return EllesmereUIDB and EllesmereUIDB.hideTransforms or false
+              end,
+              setValue=function(v)
+                  if not EllesmereUIDB then EllesmereUIDB = {} end
+                  EllesmereUIDB.hideTransforms = v
+                  if EllesmereUI._applyHideTransforms then
+                      EllesmereUI._applyHideTransforms()
+                  end
+                  EllesmereUI:RefreshPage()  -- update the picker cog disabled state
+              end }
         );  y = y - h
 
         -- Inline cog (Text Size) on the Announce Group Deaths toggle
@@ -1015,6 +1028,14 @@ initFrame:SetScript("OnEvent", function(self)
                       end,
                       set=function(v)
                         EllesmereUI.QoLExtrasSet("fpsHideLabel", v)
+                        if EllesmereUI._applyFPSCounter then EllesmereUI._applyFPSCounter() end
+                      end },
+                    { type="slider", label="Update Interval", min=1, max=5, step=1,
+                      get=function()
+                        return EllesmereUI.QoLExtrasGet("fpsUpdateInterval") or 3
+                      end,
+                      set=function(v)
+                        EllesmereUI.QoLExtrasSet("fpsUpdateInterval", v)
                         if EllesmereUI._applyFPSCounter then EllesmereUI._applyFPSCounter() end
                       end },
                 },
