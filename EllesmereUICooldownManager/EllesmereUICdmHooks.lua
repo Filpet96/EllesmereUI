@@ -1008,6 +1008,16 @@ do
         return loadingActive or GetTime() < settleUntil
     end
 
+    -- Open a fresh settle window (used by CDM full rebuilds -- spec/talent swaps,
+    -- profile import, etc.). A rebuild re-primes every icon's arm state while the
+    -- cooldown API is briefly in flux, exactly like a zone transition; without a
+    -- settle the re-prime false-arms a batch that then fires together. sec defaults
+    -- to the standard window; the longest pending window always wins.
+    function ns._cdmBumpSoundSettle(sec)
+        local until_ = GetTime() + (sec or SETTLE_SECONDS)
+        if until_ > settleUntil then settleUntil = until_ end
+    end
+
     local gate = CreateFrame("Frame")
     gate:RegisterEvent("LOADING_SCREEN_ENABLED")
     gate:RegisterEvent("LOADING_SCREEN_DISABLED")
@@ -1064,6 +1074,19 @@ local function EvalCdReadySound(frame, fd)
     local ss2 = ResolveSpellSettings(frame, sid2, ns.GetBarSpellData(bk2))
     local key = ss2 and ss2.cdReadySoundKey
     if not key or key == "none" then fd._cdReadyArmed = false; return end
+    if ns._cdmSoundSuppressed() then
+        -- Loading screen / login / rebuild settle: the cooldown API re-reports
+        -- transient states across the boundary (a spell that is actually ready can
+        -- momentarily read "on cooldown"). Arming on those transients false-arms a
+        -- whole batch of spells at once; when the window ends they all read ready in
+        -- the same event pass and fire together -- heard as several unrelated CD
+        -- ready sounds overlapping "for no reason". So do NOT arm while suppressed,
+        -- and clear any existing arm: a spell genuinely on cooldown across the
+        -- window simply re-arms from the ongoing cooldown once the window ends (the
+        -- events keep firing), so no real ready edge is lost.
+        fd._cdReadyArmed = false
+        return
+    end
     local liveSid = sid2
     if C_SpellBook and C_SpellBook.FindSpellOverrideByID then
         liveSid = C_SpellBook.FindSpellOverrideByID(sid2) or sid2
@@ -1078,13 +1101,8 @@ local function EvalCdReadySound(frame, fd)
             fd._cdReadyArmed = false
             return
         end
-        if ns._cdmSoundSuppressed() then
-            -- Loading screen / login settle: this ready edge is almost always a
-            -- zone-transition artifact, not a real cooldown finishing. Drop it
-            -- silently so it fires neither now nor when the window ends.
-            fd._cdReadyArmed = false
-            return
-        end
+        -- (Suppression is already handled above: while suppressed we never reach
+        -- here because arms are cleared and we return early.)
         -- Became ready. Confirm one frame later (let the API settle) before playing.
         if not fd._cdReadyPending then
             fd._cdReadyPending = CreateFrame("Frame")
