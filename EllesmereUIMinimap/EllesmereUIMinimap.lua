@@ -1602,7 +1602,7 @@ local function GetVaultTooltip()
     title:SetFont("Fonts\\FRIZQT__.TTF", 11, "")  -- placeholder, updated on show
     title:SetTextColor(0.80, 0.80, 0.80, 1)
     title:SetPoint("TOP", f, "TOP", 0, -VAULT_PAD)
-    title:SetText("Great Vault")
+    title:SetText(EllesmereUI.L("Great Vault"))
     f._title = title
 
     -- 3 data rows x 4 columns (label + 3 tokens)
@@ -1626,9 +1626,9 @@ local function ShowVaultTooltip(anchor)
     local worldType = (Enum and Enum.WeeklyRewardChestThresholdType and Enum.WeeklyRewardChestThresholdType.World) or 6
 
     local rows = {
-        BuildVaultRowData("Raids", raidType, true),
-        BuildVaultRowData("Mythic+", dungeonType, false),
-        BuildVaultRowData("World", worldType, false),
+        BuildVaultRowData(EllesmereUI.L("Raids"), raidType, true),
+        BuildVaultRowData(EllesmereUI.L("Mythic+"), dungeonType, false),
+        BuildVaultRowData(EllesmereUI.L("World"), worldType, false),
     }
 
     local tt = GetVaultTooltip()
@@ -1900,7 +1900,7 @@ local function CreateMinimapPortalFlyout()
             label:SetFont(fontPath, 8, "OUTLINE")
             label:SetPoint("BOTTOM", btn, "BOTTOM", 0, 2)
             label:SetTextColor(1, 1, 1, 0.9)
-            label:SetText(short)
+            label:SetText((EllesmereUI and EllesmereUI.L and EllesmereUI.L(short)) or short)
         end
 
         local hover = btn:CreateTexture(nil, "HIGHLIGHT")

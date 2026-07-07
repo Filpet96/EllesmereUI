@@ -115,11 +115,11 @@ ns.NP_ABSORB_STYLE_ALPHA = {
 -- scope to stay under Lua 5.1's 200-local limit.
 function ns._appendDisplayPresetKeys(t)
     for _, k in ipairs({
-        "topSlotSize", "topSlotXOffset", "topSlotYOffset",
-        "rightSlotSize", "rightSlotXOffset", "rightSlotYOffset",
-        "leftSlotSize", "leftSlotXOffset", "leftSlotYOffset",
-        "toprightSlotSize", "toprightSlotXOffset", "toprightSlotYOffset", "toprightSlotGrowth",
-        "topleftSlotSize", "topleftSlotXOffset", "topleftSlotYOffset", "topleftSlotGrowth",
+        "topSlotSize", "topSlotXOffset", "topSlotYOffset", "topSlotRaiseStrata",
+        "rightSlotSize", "rightSlotXOffset", "rightSlotYOffset", "rightSlotRaiseStrata",
+        "leftSlotSize", "leftSlotXOffset", "leftSlotYOffset", "leftSlotRaiseStrata",
+        "toprightSlotSize", "toprightSlotXOffset", "toprightSlotYOffset", "toprightSlotGrowth", "toprightSlotRaiseStrata",
+        "topleftSlotSize", "topleftSlotXOffset", "topleftSlotYOffset", "topleftSlotGrowth", "topleftSlotRaiseStrata",
         "textSlotTopSize", "textSlotTopXOffset", "textSlotTopYOffset",
         "textSlotRightSize", "textSlotRightXOffset", "textSlotRightYOffset",
         "textSlotLeftSize", "textSlotLeftXOffset", "textSlotLeftYOffset",
@@ -132,10 +132,25 @@ function ns._appendDisplayPresetKeys(t)
         "targetArrowDouble", "targetArrowStyle", "targetArrowColor", "targetArrowClassColor",
         "auraStackTextSize", "auraStackTextColor",
         "auraStackTextPosition", "auraStackTextX", "auraStackTextY",
+        "auraDurationTextX", "auraDurationTextY",
+        "debuffDurationTextSize", "debuffDurationTextX", "debuffDurationTextY", "debuffDurationTextColor",
+        "buffDurationTextSize", "buffDurationTextX", "buffDurationTextY", "buffDurationTextColor",
+        "ccDurationTextSize", "ccDurationTextX", "ccDurationTextY", "ccDurationTextColor",
         "buffTextSize", "buffTextColor", "ccTextSize", "ccTextColor",
         "raidMarkerPos", "classificationSlot",
+        "castNameSize", "castNameColor", "castTargetSize", "castTargetClassColor", "castTargetColor",
+        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
+        "castNameSide", "castTargetSide", "castTimerSide",
+        "castNameWidthPct", "castNameWrap", "castTargetWidthPct", "castTargetWrap",
+        "enemyNameWidthPct", "enemyNameWrap", "wrapBorderCastbar",
+        "debuffSlot", "buffSlot", "ccSlot",
+        "debuffYOffset", "sideAuraXOffset", "auraSpacing",
+        "debuffSpacing", "buffSpacing", "ccSpacing",
+        "debuffTimerPosition", "buffTimerPosition", "ccTimerPosition",
+        "auraDurationTextSize", "auraDurationTextColor",
         "debuffCropIcons", "buffCropIcons", "ccCropIcons",
         "showCastLockoutAsCrowdControl",
+        "castIconOffsetX", "castIconOffsetY",
         "targetGlowEllesmereUI", "targetGlowBorderColor", "targetGlowHighlight", "targetBorderColor",
     }) do t[#t + 1] = k end
 end
@@ -173,9 +188,12 @@ local defaults = {
     miniboss = { r = 0.518, g = 0.243, b = 0.984 },
     boss = { r = 0.518, g = 0.243, b = 0.984 },
     enemyInCombat = { r = 0.800, g = 0.137, b = 0.137 },
-    -- "Mini Enemies" (non-elite trash, dungeons only) has NO static default: when
-    -- unset it views the user's enemyInCombat color, so it starts identical to
-    -- "Enemies" and the user customizes from there (see GetReactionColor).
+    -- "Mini Enemies" (non-elite trash) has NO static default: when unset it views
+    -- the user's enemyInCombat color, so it starts identical to "Enemies" and the
+    -- user customizes from there (see GetReactionColor).
+    -- Mini Coloring M+ Only: on = restrict the Mini Enemies color to 5-man
+    -- dungeons; off = apply it everywhere (default; see GetReactionColor).
+    miniColoringMPlusOnly = false,
     darkenEnemiesOOC = true,
     tankHasAggro = { r = 0.05, g = 0.82, b = 0.62 },
     tankHasAggroEnabled = false,
@@ -309,6 +327,8 @@ local defaults = {
     -- hardcoded white at 30%, so existing users are unaffected).
     targetHighlightColor = { r = 1, g = 1, b = 1 },
     targetHighlightAlpha = 0.20,
+    nameRaidMarkerEnabled = false,
+    nameRaidMarkerSize = 14,
     raidMarkerPos = "topright",
     raidMarkerSize = 24,
     classificationSlot = "topleft",
@@ -380,6 +400,8 @@ local defaults = {
     pandemicGlowLines = 8,
     pandemicGlowThickness = 1,
     pandemicGlowSpeed = 4,
+    pandemicGlowBackground = false,
+    pandemicGlowBackgroundColor = { r = 0, g = 0, b = 0 },
     dispelGlow = false,
     dispelGlowStyle = 2,
     dispelGlowColor = { r = 1.0, g = 1.0, b = 1.0 },
@@ -392,9 +414,12 @@ local defaults = {
     questObjectiveTextSize = 14,
     showCastIcon = true,
     castIconScale = 1,
+    castIconOffsetX = 0,
+    castIconOffsetY = 0,
     castbarIconInWidth = false,
     castIconOnRight = false,
     castIconFullSize = false,
+    castIconTargetBorder = false,
     bgAlpha = 1.0,
     bgColor = { r = 0.12, g = 0.12, b = 0.12 },
     hoverColor = { r = 1, g = 1, b = 1 },
@@ -417,13 +442,15 @@ local defaults = {
     importantCastGlowLines = 8,
     importantCastGlowThickness = 2,
     importantCastGlowSpeed = 4,
+    importantCastGlowBackground = false,
+    importantCastGlowBackgroundColor = { r = 0, g = 0, b = 0 },
     -- Core Positions: slot-based size + XY offsets
-    topSlotSize = 26,        topSlotXOffset = 0,      topSlotYOffset = 0,
-    rightSlotSize = 24,      rightSlotXOffset = 0,    rightSlotYOffset = 0,
-    leftSlotSize = 24,       leftSlotXOffset = 0,     leftSlotYOffset = 0,
-    toprightSlotSize = 24,   toprightSlotXOffset = 0, toprightSlotYOffset = 0, toprightSlotGrowth = "right",
-    topleftSlotSize = 24,    topleftSlotXOffset = 0,  topleftSlotYOffset = 0,  topleftSlotGrowth = "left",
-    bottomSlotSize = 26,     bottomSlotXOffset = 0,   bottomSlotYOffset = 0,
+    topSlotSize = 26,        topSlotXOffset = 0,      topSlotYOffset = 0,      topSlotRaiseStrata = false,
+    rightSlotSize = 24,      rightSlotXOffset = 0,    rightSlotYOffset = 0,    rightSlotRaiseStrata = false,
+    leftSlotSize = 24,       leftSlotXOffset = 0,     leftSlotYOffset = 0,     leftSlotRaiseStrata = false,
+    toprightSlotSize = 24,   toprightSlotXOffset = 0, toprightSlotYOffset = 0, toprightSlotGrowth = "right", toprightSlotRaiseStrata = false,
+    topleftSlotSize = 24,    topleftSlotXOffset = 0,  topleftSlotYOffset = 0,  topleftSlotGrowth = "left",   topleftSlotRaiseStrata = false,
+    bottomSlotSize = 26,     bottomSlotXOffset = 0,   bottomSlotYOffset = 0,   bottomSlotRaiseStrata = false,
     -- Core Text Positions: slot-based size + XY offsets
     textSlotTopSize = 10,    textSlotTopXOffset = 0,  textSlotTopYOffset = 0,
     textSlotRightSize = 10,  textSlotRightXOffset = 0, textSlotRightYOffset = 0,
@@ -750,6 +777,15 @@ local function GetPandemicGlowSpeed()
     return (p and p.pandemicGlowSpeed) or defaults.pandemicGlowSpeed
 end
 ns.GetPandemicGlowSpeed = GetPandemicGlowSpeed
+-- Namespaced (not file-scope locals) to stay under this file's Lua 5.1 200-local
+-- cap; both still close over the p / defaults upvalues.
+function ns.GetPandemicGlowBackground()
+    return p and p.pandemicGlowBackground == true
+end
+function ns.GetPandemicGlowBackgroundColor()
+    local c = (p and p.pandemicGlowBackgroundColor) or defaults.pandemicGlowBackgroundColor
+    return c.r or 0, c.g or 0, c.b or 0
+end
 
 -- Dispellable buff glow: taint-safe detection via GetAuraDispelTypeColor
 do
@@ -955,6 +991,8 @@ end
 function ns.LayoutCastIcon(plate, castH)
     local icon = plate.castIconFrame
     local onRight = ns.GetCastIconOnRight()
+    local xOff = (p and p.castIconOffsetX) or defaults.castIconOffsetX
+    local yOff = (p and p.castIconOffsetY) or defaults.castIconOffsetY
     icon:ClearAllPoints()
     if ns.GetCastIconFullSize() then
         local side = GetHealthBarHeight() + castH
@@ -968,19 +1006,19 @@ function ns.LayoutCastIcon(plate, castH)
         -- the icon square (its height is fixed by the top/bottom anchors = side).
         icon:SetWidth(side)
         if onRight then
-            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", 0, 0)
-            icon:SetPoint("BOTTOMLEFT", plate.cast, "BOTTOMRIGHT", 0, 0)
+            icon:SetPoint("TOPLEFT", plate.health, "TOPRIGHT", xOff, yOff)
+            icon:SetPoint("BOTTOMLEFT", plate.cast, "BOTTOMRIGHT", xOff, yOff)
         else
-            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", 0, 0)
-            icon:SetPoint("BOTTOMRIGHT", plate.cast, "BOTTOMLEFT", 0, 0)
+            icon:SetPoint("TOPRIGHT", plate.health, "TOPLEFT", xOff, yOff)
+            icon:SetPoint("BOTTOMRIGHT", plate.cast, "BOTTOMLEFT", xOff, yOff)
         end
     else
         icon:SetScale(GetCastIconScale() or 1)
         icon:SetSize(castH, castH)
         if onRight then
-            icon:SetPoint("TOPLEFT", plate.cast, "TOPRIGHT", 0, 0)
+            icon:SetPoint("TOPLEFT", plate.cast, "TOPRIGHT", xOff, yOff)
         else
-            icon:SetPoint("TOPRIGHT", plate.cast, "TOPLEFT", 0, 0)
+            icon:SetPoint("TOPRIGHT", plate.cast, "TOPLEFT", xOff, yOff)
         end
     end
 end
@@ -1088,15 +1126,32 @@ local function FindSlotForElement(element)
 end
 ns.FindSlotForElement = FindSlotForElement
 
+-- The four combined health-text elements (percent + number, either order,
+-- "|" or "-" separator). Kept as one set so every eligibility check that treats
+-- them as a single "combined health" category stays in lockstep.
+local COMBO_HEALTH_ELEMENTS = {
+    healthPctNum     = true, healthNumPct     = true,
+    healthPctNumDash = true, healthNumPctDash = true,
+}
+local function IsComboHealthText(element)
+    return COMBO_HEALTH_ELEMENTS[element] == true
+end
+ns.IsComboHealthText = IsComboHealthText
+
 local function SetCombinedHealthText(fs, element, pctText, numText)
     if element == "healthPctNum" then
         fs:SetFormattedText("%s | %s", pctText, numText)
     elseif element == "healthNumPct" then
         fs:SetFormattedText("%s | %s", numText, pctText)
+    elseif element == "healthPctNumDash" then
+        fs:SetFormattedText("%s - %s", pctText, numText)
+    elseif element == "healthNumPctDash" then
+        fs:SetFormattedText("%s - %s", numText, pctText)
     else
         fs:SetText("")
     end
 end
+ns.SetCombinedHealthText = SetCombinedHealthText
 
 -- Estimate pixel width of health text for a given element type.
 -- We can't read actual rendered widths (WoW secret values), so we use
@@ -1108,6 +1163,8 @@ local healthTextWidths = {
     healthNumber  = 38,
     healthPctNum  = 75,
     healthNumPct  = 75,
+    healthPctNumDash = 75,
+    healthNumPctDash = 75,
 }
 local function EstimateHealthTextWidth(element)
     return (healthTextWidths[element] or 0) + HEALTH_TEXT_PADDING
@@ -1354,6 +1411,45 @@ local function GetAuraSlots()
 end
 ns.GetAuraSlots = GetAuraSlots
 
+-- Raise Strata: per-slot Core Positions toggle. When on, whichever element
+-- occupies that slot is bumped one strata level (MEDIUM -> HIGH) so it renders
+-- above the rest of the plate. Default off for every slot. Defined on ns (not a
+-- file local) to respect this file's local budget.
+function ns.GetSlotRaiseStrata(posKey)
+    if not posKey or posKey == "none" then return false end
+    local key = posKey .. "SlotRaiseStrata"
+    if p and p[key] ~= nil then return p[key] end
+    return defaults[key] or false
+end
+
+-- Apply each slot's Raise Strata setting to the element frame(s) sitting in it.
+-- Element frames otherwise share MEDIUM strata (see the plate build comments);
+-- raising to HIGH lifts that element above the flattened text/aura/indicator
+-- tiers. Children (cooldown, count carrier, border) inherit the frame's strata.
+function ns.ApplySlotStrata(plate)
+    if not plate then return end
+    local function StrataFor(slot)
+        return ns.GetSlotRaiseStrata(slot) and "HIGH" or "MEDIUM"
+    end
+    if plate.raidFrame then
+        plate.raidFrame:SetFrameStrata(StrataFor(GetRaidMarkerPos()))
+    end
+    if plate.classFrame then
+        plate.classFrame:SetFrameStrata(StrataFor(GetClassificationSlot()))
+    end
+    local ds, bs, cs = GetAuraSlots()
+    local dStr, bStr, cStr = StrataFor(ds), StrataFor(bs), StrataFor(cs)
+    if plate.debuffs then
+        for i = 1, #plate.debuffs do plate.debuffs[i]:SetFrameStrata(dStr) end
+    end
+    if plate.buffs then
+        for i = 1, #plate.buffs do plate.buffs[i]:SetFrameStrata(bStr) end
+    end
+    if plate.cc then
+        for i = 1, #plate.cc do plate.cc[i]:SetFrameStrata(cStr) end
+    end
+end
+
 -- Pandemic glow engine: procedural ants, button glow, autocast shine, FlipBook
 -- Wrapped in do...end to keep all internal locals out of the main chunk's 200-local budget.
 -- Externally-needed items are stored on ns.
@@ -1454,7 +1550,9 @@ local function StartPandemicGlow(slot, slotSize)
         local lineLen = math.floor((sz + sz) * (2 / N - 0.1))
         lineLen = min(lineLen, sz)
         if lineLen < 1 then lineLen = 1 end
-        StartProceduralAnts(pg.wrapper, N, th, period, lineLen, cr, cg, cb, sz)
+        local br, bg, bb = ns.GetPandemicGlowBackgroundColor()
+        StartProceduralAnts(pg.wrapper, N, th, period, lineLen, cr, cg, cb, sz, nil,
+            ns.GetPandemicGlowBackground() and br or nil, bg, bb)
     elseif entry.buttonGlow then
         -- Action Button Glow: animated ants texture
         pg.flipTex:Hide()
@@ -2460,6 +2558,15 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
     PP.Width(plate.name, math.max(GetHealthBarWidth(), 20))
     plate.name:SetWordWrap(false)
     plate.name:SetMaxLines(1)
+    plate.nameRaidFrame = CreateFrame("Frame", nil, plate)
+    local nameRmSize = (p and p.nameRaidMarkerSize) or defaults.nameRaidMarkerSize or 14
+    PP.Size(plate.nameRaidFrame, nameRmSize, nameRmSize)
+    plate.nameRaidFrame:SetFrameStrata("MEDIUM")
+    plate.nameRaidFrame:SetFrameLevel(901)
+    plate.nameRaidFrame:Hide()
+    plate.nameRaid = plate.nameRaidFrame:CreateTexture(nil, "ARTWORK")
+    plate.nameRaid:SetAllPoints()
+    plate.nameRaid:SetTexture("Interface\\TargetingFrame\\UI-RaidTargetingIcons")
     plate.raidFrame = CreateFrame("Frame", nil, plate)
     local rmSize = GetRaidMarkerSize()
     PP.Size(plate.raidFrame, rmSize, rmSize)
@@ -2614,6 +2721,21 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
                 -- draws over it. Only the icon-separator line is hidden so an in-width
                 -- "part of the bar" icon stays seamless with the bar.
                 if plate.castLeftBorder then plate.castLeftBorder:Hide() end
+                -- Optional (off by default): tint the full-size icon's border with the
+                -- live target border colour so it matches the wrapped bar on your
+                -- current target. The else-branch keeps the icon border black in every
+                -- other case, so turning the toggle off resets it on the next pass.
+                if plate.castIconFrame and PP.GetBorders(plate.castIconFrame) then
+                    if p and p.castIconTargetBorder
+                        and GetShowCastIcon() and ns.GetCastIconFullSize()
+                        and plate.unit and UnitIsUnit(plate.unit, "target")
+                        and ns.GetTargetGlowBorderColor()
+                    then
+                        PP.SetBorderColor(plate.castIconFrame, r, g, b, a)
+                    else
+                        PP.SetBorderColor(plate.castIconFrame, 0, 0, 0, 1)
+                    end
+                end
             end
             plate._wrapActive = true
         elseif plate._wrapActive then
@@ -2633,6 +2755,9 @@ local frameCache = CreateFramePool("Frame", UIParent, nil, nil, false, function(
                 plate.castWrapRegion:Hide()
             end
             if plate.castLeftBorder then plate.castLeftBorder:Show() end
+            if plate.castIconFrame and PP.GetBorders(plate.castIconFrame) then
+                PP.SetBorderColor(plate.castIconFrame, 0, 0, 0, 1)
+            end
             plate:ApplyCastBorder()
             plate:ApplyCastBorderColor()
         end
@@ -3595,7 +3720,8 @@ local CLASS_POWER_MAP = {
     SHAMAN      = { [263] = { "MAELSTROM_WEAPON", 10 } },  -- Enhancement only
     PRIEST      = { [258] = { "INSANITY_BAR", 100 } },     -- Shadow only
     HUNTER      = { [255] = { "TIP_OF_THE_SPEAR", 3 } },   -- Survival only
-    WARRIOR     = { [72]  = { "WHIRLWIND_STACKS", 4 } },    -- Fury only
+    WARRIOR     = { [72]  = { "WHIRLWIND_STACKS", 4 },     -- Fury
+                    [71]  = { "SWEEPING_STRIKES", 12 } },   -- Arms
     DEATHKNIGHT = { [250] = { Enum.PowerType.Runes, 6 },
                     [251] = { Enum.PowerType.Runes, 6 },
                     [252] = { Enum.PowerType.Runes, 6 } },
@@ -3928,6 +4054,15 @@ local function UpdateClassPowerOnPlate(plate)
             end
             return
         end
+    elseif classPowerType == "SWEEPING_STRIKES" then
+        cur, maxP = EllesmereUI.GetSweepingStrikes()
+        if not maxP or maxP <= 0 then
+            for i = 1, #plate._cpPips do
+                plate._cpPips[i]:Hide()
+                if plate._cpPips[i]._bg then plate._cpPips[i]._bg:Hide() end
+            end
+            return
+        end
     elseif classPowerType == "ICICLES" then
         local count = 0
         if C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
@@ -4233,6 +4368,9 @@ local function EnableClassPowerWatcher()
                     if EllesmereUI.HandleWhirlwindStacks then
                         EllesmereUI.HandleWhirlwindStacks(event, unit, castGUID, spellID)
                     end
+                    if EllesmereUI.HandleSweepingStrikes then
+                        EllesmereUI.HandleSweepingStrikes(event, unit, castGUID, spellID)
+                    end
                 end
                 RefreshClassPower()
             elseif event == "PLAYER_DEAD" or event == "PLAYER_ALIVE" then
@@ -4243,11 +4381,19 @@ local function EnableClassPowerWatcher()
                     if EllesmereUI.HandleWhirlwindStacks then
                         EllesmereUI.HandleWhirlwindStacks(event)
                     end
+                    if EllesmereUI.HandleSweepingStrikes then
+                        EllesmereUI.HandleSweepingStrikes(event)
+                    end
                 end
                 RefreshClassPower()
             elseif event == "PLAYER_REGEN_ENABLED" then
-                if not _G._ERB_AceDB and EllesmereUI and EllesmereUI.HandleWhirlwindStacks then
-                    EllesmereUI.HandleWhirlwindStacks(event)
+                if not _G._ERB_AceDB and EllesmereUI then
+                    if EllesmereUI.HandleWhirlwindStacks then
+                        EllesmereUI.HandleWhirlwindStacks(event)
+                    end
+                    if EllesmereUI.HandleSweepingStrikes then
+                        EllesmereUI.HandleSweepingStrikes(event)
+                    end
                 end
                 RefreshClassPower()
             else
@@ -4630,6 +4776,11 @@ local function GetReactionColor(unit)
     -- still returned at their own priority steps (7, 8, 10b) further down.
     local inCombat = UnitAffectingCombat(unit)
     local classification = UnitClassification(unit)
+    -- Mini Enemies color scope: restricted to 5-man dungeons when "Mini Coloring
+    -- M+ Only" is on (default), applied everywhere when it is off.
+    local miniMPlusOnly = defaults.miniColoringMPlusOnly
+    if db.miniColoringMPlusOnly ~= nil then miniMPlusOnly = db.miniColoringMPlusOnly end
+    local miniColorScope = ns._inDungeon or not miniMPlusOnly
     local _isBossUnit = false  -- deferred: boss color is applied at step 10b
     local _isMiniBoss = false
     if classification == "elite" or classification == "worldboss" or classification == "rareelite" then
@@ -4685,7 +4836,7 @@ local function GetReactionColor(unit)
     -- tanks that do NOT use the special Tank Has Aggro color. Tanks WITH that
     -- option enabled skip this and keep Mini Enemies at its original low priority
     -- (step 10c), so their has-aggro / caster / mob-type colors still win on trash.
-    if ns._inDungeon
+    if miniColorScope
        and (classification == "normal" or classification == "minus" or classification == "trivial") then
         -- Neutral + mini-enemy: neutral coloring wins over the trash color, for
         -- ALL viewers. Placed above the tank-role gate, the DPS carve-out, and the
@@ -4758,7 +4909,7 @@ local function GetReactionColor(unit)
     -- NOTE: DPS/healers and non-special-aggro tanks already returned at step 7b
     -- (Mini Enemies promoted above Caster); this low-priority path now only
     -- applies to tanks with the special "Has Aggro" color enabled.
-    if ns._inDungeon
+    if miniColorScope
        and (classification == "normal" or classification == "minus" or classification == "trivial") then
         -- Views the user's "Enemies" color (enemyInCombat) until they explicitly
         -- set a Mini Enemies color, so trash starts identical to before.
@@ -5371,6 +5522,7 @@ function NameplateFrame:ApplyAppearance()
     if self.UpdateBorderWrap and (self._wrapActive or ns.GetWrapBorderCastbar()) then
         self:UpdateBorderWrap()
     end
+    ns.ApplySlotStrata(self)
 end
 
 -- PERF: Set up health text font, position, color, and cache slot assignments.
@@ -5427,7 +5579,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
             ca[ci].element = element
             ca[ci].fs = fs
             ca[ci].slotKey = slot.key
-        elseif element == "healthPctNum" or element == "healthNumPct" then
+        elseif IsComboHealthText(element) then
             local fs = self.hpText
             fs:SetParent(self.healthTextFrame)
             SetFSFont(fs, slotFontSz, GetNPOutline())
@@ -5451,7 +5603,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
     -- Top slot health text
     local topElement = GetTextSlot("textSlotTop")
     if topElement == "healthPercent" or topElement == "healthPercentNoSign" or topElement == "healthNumber"
-       or topElement == "healthPctNum" or topElement == "healthNumPct" then
+       or IsComboHealthText(topElement) then
         local nameYOff = GetNameYOffset()
         local cpPush = GetClassPowerTopPush(self)
         local txOff, tyOff = GetTextSlotOffsets("textSlotTop")
@@ -5486,7 +5638,7 @@ function NameplateFrame:ApplyHealthTextAppearance()
         local e = ca[i]
         local el = e.element
         if el == "healthPercent" or el == "healthPercentNoSign"
-           or el == "healthPctNum" or el == "healthNumPct" then
+           or IsComboHealthText(el) then
             local dec = (p and e.slotKey and p[e.slotKey .. "PctDecimal"]) and true or false
             e.pctDecimal = dec
             if dec then anyDec = true end
@@ -5614,6 +5766,7 @@ function NameplateFrame:SetUnit(unit, nameplate)
             self:UpdateName()
             self:UpdateClassification()
             self:UpdateRaidIcon()
+            if p and p.nameRaidMarkerEnabled == true then self:RefreshNamePosition(true) end
             self:ApplyTarget()
             self:ApplyMouseover()
             self:UpdateCast()
@@ -5696,6 +5849,7 @@ function NameplateFrame:ClearUnit()
     self._kickGeoDirty = nil
     self._castTex = nil
     self._castLockout = nil
+    self._nameRaidMarkerShown = nil
     if ns._npDequeueAuraWork then ns._npDequeueAuraWork(self) end
     self.cast:Hide()
     self.castShieldFrame:Hide()
@@ -5715,6 +5869,7 @@ function NameplateFrame:ClearUnit()
     if self.glow then self.glow:Hide() end
     if self.targetHighlight then self.targetHighlight:Hide() end
     ns.HideHoverEffect(self)
+    if self.nameRaidFrame then self.nameRaidFrame:Hide() end
     self.raidFrame:Hide()
     self.classFrame:Hide()
     if self.classText then self.classText:Hide() end
@@ -5942,7 +6097,7 @@ function NameplateFrame:UpdateHealthValues()
                 fs:SetText(entry.pctDecimal and pctNoSignTextDec or pctNoSignText)
             elseif el == "healthNumber" then
                 fs:SetText(numText)
-            elseif el == "healthPctNum" or el == "healthNumPct" then
+            elseif IsComboHealthText(el) then
                 SetCombinedHealthText(fs, el, entry.pctDecimal and pctTextDec or pctText, numText)
             end
         end
@@ -6060,6 +6215,7 @@ function NameplateFrame:UpdateName()
     local name = UnitName(unit)
     if type(name) == "string" then
         self.name:SetText(name)
+        if p and p.nameRaidMarkerEnabled == true then self:RefreshNamePosition(true) end
     end
 end
 function NameplateFrame:UpdateClassification()
@@ -6150,9 +6306,10 @@ function NameplateFrame:UpdateNameWidth()
     -- Width % scales the computed (bar-derived) width; 100 = historical behaviour.
     local pct = (p and p.enemyNameWidthPct) or defaults.enemyNameWidthPct
     local nameSlot = FindSlotForElement("enemyName")
+    local nameMarkerReserve = (self.nameRaidFrame and self.nameRaidFrame:IsShown()) and (((p and p.nameRaidMarkerSize) or defaults.nameRaidMarkerSize or 14) + 3) or 0
     if nameSlot == "textSlotTop" then
         -- Above the bar: full bar width minus raid marker if shown
-        local nameW = barW
+        local nameW = barW - nameMarkerReserve
         local rmPos = GetRaidMarkerPos()
         if rmPos ~= "none" and self.raidFrame:IsShown() then
             nameW = nameW - 2 * (GetRaidMarkerSize() - 2) - 7
@@ -6175,7 +6332,7 @@ function NameplateFrame:UpdateNameWidth()
                 end
             end
         end
-        local nameW = barW - usedWidth
+        local nameW = barW - usedWidth - nameMarkerReserve
         PP.Width(self.name, math.max(nameW * pct / 100, 20))
     else
         -- Name not in any slot, use minimal width
@@ -6187,7 +6344,9 @@ function NameplateFrame:ApplyNameVisibility()
     -- only override it (hide while the cast bar is up) when the feature is on.
     if not GetHideEnemyNameWhileCasting() then return end
     local hasNameSlot = FindSlotForElement("enemyName") ~= nil
-    self.name:SetShown(hasNameSlot and not self.cast:IsShown())
+    local shown = hasNameSlot and not self.cast:IsShown()
+    self.name:SetShown(shown)
+    if self.nameRaidFrame then self.nameRaidFrame:SetShown(shown and self._nameRaidMarkerShown == true) end
 end
 -- The full-size cast icon (a child of the cast bar) only occupies its side-slot
 -- space while a cast is up, so its reserve is gated on the cast bar being shown
@@ -6202,23 +6361,43 @@ function NameplateFrame:RefreshCastIconSideReserve()
     self:UpdateRaidIcon()
     PositionArrowsOutsideAuras(self)
 end
-function NameplateFrame:RefreshNamePosition()
+
+function NameplateFrame:RefreshNamePosition(localOnly)
     local nameSlot = FindSlotForElement("enemyName")
     local nameYOff = GetNameYOffset()
+    local nameMarkerShown
+    local nameMarkerSize = (p and p.nameRaidMarkerSize) or defaults.nameRaidMarkerSize or 14
+    if self.nameRaidFrame then
+        local idx
+        if p and p.nameRaidMarkerEnabled == true and nameSlot and self.unit then
+            idx = GetRaidTargetIndex and GetRaidTargetIndex(self.unit)
+        end
+        if type(idx) == "nil" then
+            self._nameRaidMarkerShown = nil
+            self.nameRaidFrame:Hide()
+        else
+            SetRaidTargetIconTexture(self.nameRaid, idx)
+            PP.Size(self.nameRaidFrame, nameMarkerSize, nameMarkerSize)
+            self._nameRaidMarkerShown = true
+            self.nameRaidFrame:Show()
+            nameMarkerShown = true
+        end
+    end
+    local nameMarkerReserve = nameMarkerShown and (nameMarkerSize + 3) or 0
     self:UpdateNameWidth()
     self.name:ClearAllPoints()
     if nameSlot == "textSlotLeft" then
         local txOff, tyOff = GetTextSlotOffsets("textSlotLeft")
         SetFSFont(self.name, GetTextSlotSize("textSlotLeft"), GetNPOutline())
         self.name:SetParent(self.healthTextFrame)
-        PP.Point(self.name, "LEFT", self.health, "LEFT", 4 + txOff, tyOff)
+        PP.Point(self.name, "LEFT", self.health, "LEFT", 4 + txOff + nameMarkerReserve, tyOff)
         self.name:SetJustifyH("LEFT")
         self.name:Show()
     elseif nameSlot == "textSlotCenter" then
         local txOff, tyOff = GetTextSlotOffsets("textSlotCenter")
         SetFSFont(self.name, GetTextSlotSize("textSlotCenter"), GetNPOutline())
         self.name:SetParent(self.healthTextFrame)
-        self.name:SetPoint("CENTER", self.health, "CENTER", txOff, tyOff)
+        self.name:SetPoint("CENTER", self.health, "CENTER", txOff + (nameMarkerReserve * 0.5), tyOff)
         self.name:SetJustifyH("CENTER")
         self.name:Show()
     elseif nameSlot == "textSlotRight" then
@@ -6233,7 +6412,7 @@ function NameplateFrame:RefreshNamePosition()
         SetFSFont(self.name, GetTextSlotSize("textSlotTop"), GetNPOutline())
         self.name:SetParent(self.topTextFrame)
         local cpPush = GetClassPowerTopPush(self)
-        PP.Point(self.name, "BOTTOM", self.health, "TOP", txOff, 4 + nameYOff + cpPush + tyOff)
+        PP.Point(self.name, "BOTTOM", self.health, "TOP", txOff + (nameMarkerReserve * 0.5), 4 + nameYOff + cpPush + tyOff)
         self.name:SetJustifyH("CENTER")
         self.name:Show()
     else
@@ -6250,6 +6429,30 @@ function NameplateFrame:RefreshNamePosition()
     self.name:SetMaxLines(nameWrap and 2 or 1)
     ns.ReflowFontString(self.name)
     self:ApplyNameVisibility()
+    local nameRaid = self.nameRaidFrame
+    if nameRaid and self._nameRaidMarkerShown and self.name:IsShown() then
+        PP.Size(nameRaid, nameMarkerSize, nameMarkerSize)
+        nameRaid:SetParent((nameSlot == "textSlotTop") and self.topTextFrame or self.healthTextFrame)
+        nameRaid:SetFrameStrata("MEDIUM")
+        nameRaid:SetFrameLevel(901)
+        nameRaid:ClearAllPoints()
+        local textW = self.name:GetWidth() or 0
+        local ok, renderedW = pcall(self.name.GetStringWidth, self.name)
+        if ok and type(renderedW) == "number" and not (issecretvalue and issecretvalue(renderedW)) then
+            textW = math.min(renderedW, textW)
+        end
+        if nameSlot == "textSlotLeft" then
+            nameRaid:SetPoint("RIGHT", self.name, "LEFT", -3, 0)
+        elseif nameSlot == "textSlotRight" then
+            nameRaid:SetPoint("RIGHT", self.name, "RIGHT", -textW - 3, 0)
+        else
+            nameRaid:SetPoint("RIGHT", self.name, "CENTER", -(textW * 0.5) - 3, 0)
+        end
+        nameRaid:Show()
+    elseif nameRaid then
+        nameRaid:Hide()
+    end
+    if localOnly then return end
     self:UpdateAuras()
     self:UpdateClassification()
 end
@@ -7081,9 +7284,22 @@ function NameplateFrame:UpdateImportantCastGlow(spellID)
     local style = cfg.importantCastGlowStyle or defaults.importantCastGlowStyle or 1
     if style ~= 1 and style ~= 4 then style = 1 end
     local c = cfg.importantCastGlowColor or defaults.importantCastGlowColor or { r = 1, g = 0.2, b = 0.2 }
+    local bgColor = cfg.importantCastGlowBackgroundColor or defaults.importantCastGlowBackgroundColor or { r = 0, g = 0, b = 0 }
+    local bgOn = cfg.importantCastGlowBackground == true
+    local impN, impTh, impPeriod
+    if style ~= 4 then
+        impN = cfg.importantCastGlowLines or defaults.importantCastGlowLines or 8
+        impTh = cfg.importantCastGlowThickness or defaults.importantCastGlowThickness or 2
+        impPeriod = cfg.importantCastGlowSpeed or defaults.importantCastGlowSpeed or 4
+    end
 
     -- Ensure glow animation is running (idempotent if already active)
-    if not self._importantGlowActive or self._importantGlowStyle ~= style then
+    if not self._importantGlowActive or self._importantGlowStyle ~= style
+       or self._importantGlowR ~= c.r or self._importantGlowG ~= c.g or self._importantGlowB ~= c.b
+       or self._importantGlowBgOn ~= bgOn or self._importantGlowBgR ~= bgColor.r
+       or self._importantGlowBgG ~= bgColor.g or self._importantGlowBgB ~= bgColor.b
+       or self._importantGlowN ~= impN or self._importantGlowTh ~= impTh
+       or self._importantGlowPeriod ~= impPeriod then
         Glows.StopAllGlows(self._importantCastOverlay)
         local pW, pH = self.cast:GetWidth(), self.cast:GetHeight()
         if pW < 5 then pW = 100 end
@@ -7091,16 +7307,18 @@ function NameplateFrame:UpdateImportantCastGlow(spellID)
         if style == 4 then
             (StartAutoCastShine or Glows.StartAutoCastShine)(self._importantCastOverlay, pW, c.r, c.g, c.b, 1.0, pH)
         else
-            local N = cfg.importantCastGlowLines or defaults.importantCastGlowLines or 8
-            local th = cfg.importantCastGlowThickness or defaults.importantCastGlowThickness or 2
-            local period = cfg.importantCastGlowSpeed or defaults.importantCastGlowSpeed or 4
-            local lineLen = math.floor((pW + pH) * (2 / N - 0.1))
+            local lineLen = math.floor((pW + pH) * (2 / impN - 0.1))
             lineLen = math.min(lineLen, math.min(pW, pH))
             if lineLen < 1 then lineLen = 1 end
-            (StartProceduralAnts or Glows.StartProceduralAnts)(self._importantCastOverlay, N, th, period, lineLen, c.r, c.g, c.b, pW, pH)
+            (StartProceduralAnts or Glows.StartProceduralAnts)(self._importantCastOverlay, impN, impTh, impPeriod, lineLen, c.r, c.g, c.b, pW, pH,
+                bgOn and (bgColor.r or 0) or nil, bgColor.g or 0, bgColor.b or 0)
         end
         self._importantGlowActive = true
         self._importantGlowStyle = style
+        self._importantGlowR, self._importantGlowG, self._importantGlowB = c.r, c.g, c.b
+        self._importantGlowBgOn = bgOn
+        self._importantGlowBgR, self._importantGlowBgG, self._importantGlowBgB = bgColor.r, bgColor.g, bgColor.b
+        self._importantGlowN, self._importantGlowTh, self._importantGlowPeriod = impN, impTh, impPeriod
     end
 
     -- SetAlphaFromBoolean handles the secret boolean taint-free.
@@ -8497,6 +8715,7 @@ manager:SetScript("OnEvent", function(self, event, unit)
     elseif event == "RAID_TARGET_UPDATE" then
         for _, plate in pairs(ns.plates) do
             plate:UpdateRaidIcon()
+            if p and p.nameRaidMarkerEnabled == true then plate:RefreshNamePosition(true) end
         end
     elseif event == "PLAYER_REGEN_DISABLED" or event == "PLAYER_REGEN_ENABLED" then
         for _, plate in pairs(ns.plates) do
@@ -8616,38 +8835,7 @@ do
         "textSlotTop", "textSlotRight", "textSlotLeft", "textSlotCenter",
         "nameYOffset",
         "healthBarHeight", "healthBarWidth", "castBarHeight",
-        "castNameSize", "castNameColor", "castTargetSize", "castTargetClassColor", "castTargetColor",
-        "showCastTimer", "castTimerSize", "castTimerColor", "targetScale",
-        "debuffSlot", "buffSlot", "ccSlot",
-        "debuffYOffset", "sideAuraXOffset", "auraSpacing",
-        "debuffSpacing", "buffSpacing", "ccSpacing",
-        "debuffTimerPosition", "buffTimerPosition", "ccTimerPosition",
-        "auraDurationTextSize", "auraDurationTextColor",
     }
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "auraDurationTextX"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "auraDurationTextY"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "debuffDurationTextSize"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "debuffDurationTextX"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "debuffDurationTextY"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "debuffDurationTextColor"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "buffDurationTextSize"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "buffDurationTextX"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "buffDurationTextY"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "buffDurationTextColor"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "ccDurationTextSize"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "ccDurationTextX"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "ccDurationTextY"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "ccDurationTextColor"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castNameSide"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castTargetSide"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castTimerSide"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castNameWidthPct"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castNameWrap"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castTargetWidthPct"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "castTargetWrap"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "enemyNameWidthPct"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "enemyNameWrap"
-    ns._displayPresetKeys[#ns._displayPresetKeys + 1] = "wrapBorderCastbar"
     ns._appendDisplayPresetKeys(ns._displayPresetKeys)
 
     -- Also handle spec changes that happen before the UI is ever opened
