@@ -1057,12 +1057,7 @@ do
         return loadingActive or GetTime() < settleUntil
     end
 
-    -- Open a fresh settle window (used by CDM full rebuilds -- spec/talent swaps,
-    -- profile import, etc.). A rebuild re-primes every icon's arm state while the
-    -- cooldown API is briefly in flux, exactly like a zone transition; without a
-    -- settle the re-prime false-arms a batch that then fires together. sec defaults
-    -- to the standard window; the longest pending window always wins.
-    function ns._cdmBumpSoundSettle(sec)
+    function ns._cdmBumpSoundSettle(sec) -- post-rebuild/login settle; longest window wins
         local until_ = GetTime() + (sec or SETTLE_SECONDS)
         if until_ > settleUntil then settleUntil = until_ end
     end
@@ -1095,18 +1090,7 @@ SlashCmdList.CDMREADYDBG = function()
     print("|cff0cd29f[CDReady]|r debug " .. (ns._cdReadySoundDebug and "ON" or "OFF"))
 end
 
--- Minimum time a spell must stay "on cooldown" (armed) before its ready edge is
--- allowed to play. C_Spell.GetSpellCooldown has a documented race where a spell
--- that is actually READY briefly reads isActive=true / isOnGCD=false during a GCD
--- (rage/range/GCD repaints while abilities are spammed in combat), which false-arms
--- it; the next event then reads it ready and fires. Several ready spells catch the
--- same race at once -> a burst of unrelated CD-ready sounds mid-fight (Invoke Chi-Ji
--- + Celestial Conduit heard together). A real cooldown always lasts far longer than
--- a GCD, so requiring the armed state to persist past the longest GCD (1.5s) filters
--- these transient false-arms without dropping any genuine cooldown. Duration is not
--- read directly (it is a Secret value in restricted instances) -- only wall-clock
--- time between the arm and the ready edge is used.
-local CD_READY_MIN_ARM = 1.6
+local CD_READY_MIN_ARM = 1.6 -- reject armed->ready edges shorter than a GCD misread
 
 -- Is the spell READY right now? Charge spells: only at MAX charges (recharge not
 -- running). Non-charge: not on a real (non-GCD) cooldown. liveSid = resolved override.
@@ -1119,20 +1103,7 @@ local function CdReadyIsReady(liveSid)
     return not (cd and cd.isActive and not cd.isOnGCD)
 end
 
--- Shared evaluator. Arms while not ready, plays + disarms on the ready edge.
--- Deferred one frame and re-confirmed so a charge/GCD-tail race that momentarily
--- reads ready can't false-fire. Self-gates zero-cost on the feature flag.
---
--- primeOnly: when true this ONLY updates the arm state and never plays. The prime
--- caller (WatchCdReadySoundIfEnabled, run from DecorateFrame) fires for EVERY
--- watched icon in one synchronous loop on every CDM refresh/reanchor -- which in a
--- dungeon happens constantly (each mob death). During those repaints
--- C_Spell.GetSpellCooldown briefly reports on-cooldown spells as ready, so letting
--- the prime loop play would fire a whole batch of unrelated ready sounds at once
--- (Invoke Chi-Ji + Celestial Conduit heard together mid-fight). Playing is
--- therefore restricted to the authoritative SPELL_UPDATE_COOLDOWN/CHARGES events;
--- a genuine cooldown end always fires those, so no real ready edge is lost.
-local function EvalCdReadySound(frame, fd, primeOnly)
+local function EvalCdReadySound(frame, fd, primeOnly) -- primeOnly: arm only; DecorateFrame refresh must not play
     if not ns._cdmAnyCdReadySound then return end
     if not fd then return end
     if fd._isProcessingOverride then return end
@@ -1146,15 +1117,6 @@ local function EvalCdReadySound(frame, fd, primeOnly)
     local key = ss2 and ss2.cdReadySoundKey
     if not key or key == "none" then fd._cdReadyArmed = false; return end
     if ns._cdmSoundSuppressed() then
-        -- Loading screen / login / rebuild settle: the cooldown API re-reports
-        -- transient states across the boundary (a spell that is actually ready can
-        -- momentarily read "on cooldown"). Arming on those transients false-arms a
-        -- whole batch of spells at once; when the window ends they all read ready in
-        -- the same event pass and fire together -- heard as several unrelated CD
-        -- ready sounds overlapping "for no reason". So do NOT arm while suppressed,
-        -- and clear any existing arm: a spell genuinely on cooldown across the
-        -- window simply re-arms from the ongoing cooldown once the window ends (the
-        -- events keep firing), so no real ready edge is lost.
         fd._cdReadyArmed = false
         return
     end
@@ -1163,10 +1125,7 @@ local function EvalCdReadySound(frame, fd, primeOnly)
         liveSid = C_SpellBook.FindSpellOverrideByID(sid2) or sid2
     end
     if not CdReadyIsReady(liveSid) then
-        -- On cooldown (or a charge spell below max): arm. Stamp the arm start (only
-        -- on the ready -> armed transition, not on every on-cd read) so the ready
-        -- edge can reject GCD-race false-arms that never lasted a real cooldown.
-        if not fd._cdReadyArmed then fd._cdReadyArmedAt = GetTime() end
+        if not fd._cdReadyArmed then fd._cdReadyArmedAt = GetTime() end -- for min-arm filter
         fd._cdReadyArmed = true
         fd._cdReadyArmedSid = sid2
     elseif fd._cdReadyArmed and not primeOnly then
@@ -1175,8 +1134,6 @@ local function EvalCdReadySound(frame, fd, primeOnly)
             fd._cdReadyArmed = false
             return
         end
-        -- (Suppression is already handled above: while suppressed we never reach
-        -- here because arms are cleared and we return early.)
         -- Became ready. Confirm one frame later (let the API settle) before playing.
         if not fd._cdReadyPending then
             fd._cdReadyPending = CreateFrame("Frame")
@@ -1198,10 +1155,8 @@ local function EvalCdReadySound(frame, fd, primeOnly)
                 end
                 if not CdReadyIsReady(livep) then return end  -- not ready (race) -> stay armed
                 if ns._cdmSoundSuppressed() then fd._cdReadyArmed = false; return end  -- a load began mid-defer
-                -- Reject a GCD-race false-arm: if the "cooldown" never lasted longer
-                -- than a GCD it was a transient misread, not a real cooldown ending.
                 local armedAt = fd._cdReadyArmedAt
-                if not armedAt or (GetTime() - armedAt) < CD_READY_MIN_ARM then
+                if not armedAt or (GetTime() - armedAt) < CD_READY_MIN_ARM then -- GCD-race false arm
                     fd._cdReadyArmed = false
                     return
                 end

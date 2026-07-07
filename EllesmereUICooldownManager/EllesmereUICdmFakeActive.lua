@@ -604,18 +604,9 @@ EvalCdStateNow = function()
         local soundKey = cas and cas.cdReadySoundKey
         if soundKey == "none" then soundKey = nil end
         if eff or soundKey then
-            -- Trinket item rules bake a slot (-13/-14) at re-arm time, but the slot
-            -- may not have been readable yet when the rule was built (equipment is
-            -- not queryable during the very first login rebuild -> matchKey stayed
-            -- the item key, so the icon match + cooldown read silently missed and no
-            -- sound ever fired until a manual re-arm). Trinkets can also be swapped
-            -- between slots without a full re-arm. Re-resolve the live slot here off
-            -- the source item key so the match always targets the slot that holds
-            -- the item now. Non-trinket item presets (potions etc.) key by the item
-            -- itself and are never equipped, so they fall through unchanged.
             local sid = rule.spellID
             local srcKey = rule.srcKey or sid
-            if srcKey < 0 and GetInventoryItemID then
+            if srcKey < 0 and GetInventoryItemID then -- re-resolve trinket slot; baked slot can be stale at login/swap
                 local itemID = -srcKey
                 if GetInventoryItemID("player", 13) == itemID then sid = -13
                 elseif GetInventoryItemID("player", 14) == itemID then sid = -14 end
@@ -825,12 +816,7 @@ end
 -- Re-arm on every CDM full rebuild, kept out of the (large) rebuild function.
 local _origFullCDMRebuild = ns.FullCDMRebuild
 ns.FullCDMRebuild = function(reason)
-    -- A rebuild re-primes every icon's CD-ready arm state while the cooldown API
-    -- is momentarily in flux (spec/talent swaps, profile import, etc.), which can
-    -- false-arm a batch of spells that then fire their ready sound together. Open a
-    -- settle window so those transient re-primes are dropped, mirroring the window
-    -- that already covers loading screens.
-    if ns._cdmBumpSoundSettle then ns._cdmBumpSoundSettle() end
+    if ns._cdmBumpSoundSettle then ns._cdmBumpSoundSettle() end -- drop false CD-ready arms during rebuild
     if _origFullCDMRebuild then _origFullCDMRebuild(reason) end
     ns.FakeActive_Rearm()
 end
