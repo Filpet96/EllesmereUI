@@ -7837,8 +7837,11 @@ ns._LayoutGroupsImpl = function()
     end
     containerFrame:SetSize(PixelSnap(totalW), PixelSnap(totalH))
 
-    -- Snap the container's screen position to the pixel grid
-    if not InCombatLockdown() then
+    -- Snap the container's screen position to the pixel grid. Skip when
+    -- element-anchored: ApplyAnchorPosition already pixel-snaps, and a
+    -- TOPLEFT re-anchor here would fight the anchor cascade.
+    if not InCombatLockdown()
+       and not (EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("RF_RaidFrames")) then
         local l = containerFrame:GetLeft()
         local t = containerFrame:GetTop()
         if l and t then
@@ -8356,6 +8359,12 @@ end
 -- tier offsets were rebased once by _NormalizeTierOffsetAnchors).
 ns._ApplyTierOffset = function()
     if not containerFrame or InCombatLockdown() then return end
+    -- Element-anchored container: the unlock anchor system owns the position
+    -- (absolute coords recomputed from the anchor target), so repositioning
+    -- from unlockPos here would clobber it on every roster/tier pass. The
+    -- anchor's edge-to-edge offsets keep the near edge flush across tier
+    -- size changes; per-tier offsets do not apply while anchored.
+    if EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("RF_RaidFrames") then return end
     local pos = db.profile.unlockPos
     if not pos then return end
     local ox, oy = 0, 0
@@ -10184,9 +10193,6 @@ local function RegisterWithUnlockMode()
             label = "Raid Frames",
             group = "Raid Frames",
             order = 500,
-            noAnchorChildren = true,
-            noAnchorTo = true,
-            noAnchorTarget = true,
             noResize = true,
             -- RF positions its own container via _ApplyTierOffset (base 20-man
             -- top-left + per-tier offset, tier-footprint-INDEPENDENT), re-run on
@@ -10226,9 +10232,6 @@ local function RegisterWithUnlockMode()
             label = "Party Frames",
             group = "Raid Frames",
             order = 501,
-            noAnchorChildren = true,
-            noAnchorTo = true,
-            noAnchorTarget = true,
             noResize = true,
 
             getFrame = function() return ns._partyContainerFrame end,
@@ -10246,6 +10249,13 @@ local function RegisterWithUnlockMode()
                 db.profile.partyUnlockPos = nil
             end,
             applyPos = function()
+                -- Element-anchored: the anchor system owns the position. Only
+                -- apply the saved pos as a bootstrap while the frame has no
+                -- resolved geometry yet (anchor pass corrects it after).
+                if EllesmereUI.IsUnlockAnchored and EllesmereUI.IsUnlockAnchored("RF_PartyFrames")
+                   and ns._partyContainerFrame and ns._partyContainerFrame:GetLeft() then
+                    return
+                end
                 local pos = db.profile.partyUnlockPos
                 if pos and ns._partyContainerFrame then
                     ns._partyContainerFrame:ClearAllPoints()
@@ -14592,7 +14602,12 @@ function ERF:OnEnable()
         local sp = s.cellSpacing or 2
         ns._partyContainerFrame:SetSize(w, h * 5 + sp * 4)
         local pos = s.partyUnlockPos
-        if pos then
+        -- Skip the saved-pos SetPoint when element-anchored with resolved
+        -- geometry: the unlock anchor system owns the position.
+        local anchored = EllesmereUI.IsUnlockAnchored
+            and EllesmereUI.IsUnlockAnchored("RF_PartyFrames")
+            and ns._partyContainerFrame:GetLeft()
+        if pos and not anchored then
             ns._partyContainerFrame:ClearAllPoints()
             ns._partyContainerFrame:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
         end
@@ -14633,7 +14648,12 @@ function ERF:OnEnable()
             local sp = s.cellSpacing or 2
             ns._partyContainerFrame:SetSize(w, h * 5 + sp * 4)
             local pos = s.partyUnlockPos
-            if pos then
+            -- Skip the saved-pos SetPoint when element-anchored with resolved
+            -- geometry: the unlock anchor system owns the position.
+            local anchored = EllesmereUI.IsUnlockAnchored
+                and EllesmereUI.IsUnlockAnchored("RF_PartyFrames")
+                and ns._partyContainerFrame:GetLeft()
+            if pos and not anchored then
                 ns._partyContainerFrame:ClearAllPoints()
                 ns._partyContainerFrame:SetPoint(pos.point, UIParent, pos.relPoint, pos.x, pos.y)
             end
