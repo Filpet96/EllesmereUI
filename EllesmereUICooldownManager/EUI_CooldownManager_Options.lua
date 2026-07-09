@@ -1972,8 +1972,8 @@ initFrame:SetScript("OnEvent", function(self)
             local wrap = _tbbPopoutBars[n]
             if not wrap then
                 wrap = ns.CreateTBBBarFrame(oc, "Pv" .. n)
-                -- The live constructor pins MEDIUM strata; lift the preview
-                -- into the popout's strata and re-assert the child levels the
+                -- The live constructor pins HIGH strata; lift the preview into
+                -- the popout's strata and re-assert the child levels the
                 -- constructor established (a parent strata change can reset
                 -- child frame levels).
                 wrap:SetFrameStrata("FULLSCREEN_DIALOG")
@@ -1982,11 +1982,7 @@ initFrame:SetScript("OnEvent", function(self)
                 local sb = wrap._bar
                 if sb then sb:SetFrameLevel(base + 1) end
                 if wrap._sparkOverlay and sb then wrap._sparkOverlay:SetFrameLevel(sb:GetFrameLevel() + 2) end
-                if wrap._textOverlay and sb then
-                    -- Constructor pins HIGH (below the popout); lift text into the popout's strata.
-                    wrap._textOverlay:SetFrameStrata("FULLSCREEN_DIALOG")
-                    wrap._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 6)
-                end
+                if wrap._textOverlay and sb then wrap._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 6) end
                 if wrap._pandemicGlowOverlay then wrap._pandemicGlowOverlay:SetFrameLevel(base + 6) end
                 _tbbPopoutBars[n] = wrap
             end

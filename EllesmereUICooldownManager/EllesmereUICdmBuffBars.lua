@@ -1264,7 +1264,10 @@ ns.RefreshBuffBarGating  = function() end
 -------------------------------------------------------------------------------
 local function CreateTrackedBuffBarFrame(parent, idx)
     local wrapFrame = CreateFrame("Frame", "ECME_TBBWrap" .. idx, parent)
-    wrapFrame:SetFrameStrata("MEDIUM")
+    -- HIGH strata so the whole bar (fill, border, text) renders above the
+    -- buff-icon displays (MEDIUM), including their borders and cooldown swipes,
+    -- when the two elements overlap.
+    wrapFrame:SetFrameStrata("HIGH")
     wrapFrame:SetFrameLevel(10)
 
     local bar = CreateFrame("StatusBar", "ECME_TBB" .. idx, wrapFrame)
@@ -1303,14 +1306,12 @@ local function CreateTrackedBuffBarFrame(parent, idx)
     wrapFrame._gradTex  = nil
 
     -- Text overlay: parented to wrapFrame (not bar) so bar's SetClipsChildren
-    -- doesn't chop text when font size exceeds bar height. HIGH strata keeps the
-    -- timer/name/stacks text above overlapping buff-icon displays (MEDIUM) and
-    -- their borders/cooldown swipes; the +6 level keeps it above this bar's own
-    -- border (bar +5) and pandemic glow (wrapFrame +6). Keyed off bar (like the
-    -- border) so the two track together.
+    -- doesn't chop text when font size exceeds bar height. Inherits wrapFrame's
+    -- strata; the +6 level keeps it above this bar's own border (bar +5) and
+    -- pandemic glow (wrapFrame +6). Keyed off bar (like the border) so the two
+    -- track together.
     local textOverlay = CreateFrame("Frame", nil, wrapFrame)
     textOverlay:SetAllPoints(bar)
-    textOverlay:SetFrameStrata("HIGH")
     textOverlay:SetFrameLevel(bar:GetFrameLevel() + 6)
     wrapFrame._textOverlay = textOverlay
 
