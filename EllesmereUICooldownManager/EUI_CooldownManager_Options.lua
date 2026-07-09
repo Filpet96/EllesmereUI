@@ -1982,7 +1982,11 @@ initFrame:SetScript("OnEvent", function(self)
                 local sb = wrap._bar
                 if sb then sb:SetFrameLevel(base + 1) end
                 if wrap._sparkOverlay and sb then wrap._sparkOverlay:SetFrameLevel(sb:GetFrameLevel() + 2) end
-                if wrap._textOverlay and sb then wrap._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 6) end
+                if wrap._textOverlay and sb then
+                    -- Constructor pins HIGH (below the popout); lift text into the popout's strata.
+                    wrap._textOverlay:SetFrameStrata("FULLSCREEN_DIALOG")
+                    wrap._textOverlay:SetFrameLevel(sb:GetFrameLevel() + 6)
+                end
                 if wrap._pandemicGlowOverlay then wrap._pandemicGlowOverlay:SetFrameLevel(base + 6) end
                 _tbbPopoutBars[n] = wrap
             end
