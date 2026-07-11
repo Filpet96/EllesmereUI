@@ -3175,12 +3175,14 @@ ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fromCa
             local gd = GetBarGrowDirActual(childKey)
             if gd and gd ~= "CENTER" then growSkip = true end
         end
+        -- Tag as anchor-derived so unlock spec-override routing doesn't bank
+        -- these follow positions as user Position edits (only real drags do).
         if growSkip then
-            pendingPositions[childKey] = { _anchored = true }
+            pendingPositions[childKey] = { _anchored = true, _derived = true }
         else
             pendingPositions[childKey] = {
                 point = "CENTER", relPoint = "CENTER",
-                x = bCenterX, y = bCenterY,
+                x = bCenterX, y = bCenterY, _derived = true,
             }
         end
     end
@@ -3361,7 +3363,7 @@ EllesmereUI.ReapplyAllUnlockAnchors = function()
 
     -- No position persistence here. Positions are only saved by
     -- unlock mode's Save & Exit (CommitPositions).
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -- Forced version of ReapplyAllUnlockAnchors: clears each child's points
@@ -3439,7 +3441,7 @@ EllesmereUI.ReapplyAllUnlockAnchorsForced = function()
 
     -- No position persistence here. Positions are only saved by
     -- unlock mode's Save & Exit (CommitPositions).
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -- UIParent-space center (x, y) of childKey's current anchor target, computed
@@ -3510,7 +3512,7 @@ EllesmereUI.ResyncAnchorOffsets = function()
     if EllesmereUI.SpecOverrides_UnlockSyncAnchorOffsets then
         EllesmereUI.SpecOverrides_UnlockSyncAnchorOffsets()
     end
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -------------------------------------------------------------------------------
@@ -9828,7 +9830,11 @@ function EllesmereUI._unlockRouteSpecOvSave()
         t[aspect] = val
     end
     for key, pos in pairs(pendingPositions) do
-        Touch(key, "pos", pos == "RESET" and "RESET" or true)
+        if pos == "RESET" then
+            Touch(key, "pos", "RESET")
+        elseif not (type(pos) == "table" and pos._derived) then
+            Touch(key, "pos", true) -- skip anchor-derived follow positions; only user drags/nudges bank pos
+        end
     end
     for key in pairs(anchorDB) do
         if AnchorsDiffer(anchorDB[key], snapshotAnchors[key]) then Touch(key, "anchor", true) end
