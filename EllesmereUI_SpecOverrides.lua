@@ -141,6 +141,33 @@ local function SpecName(specID)
     return name or ("Spec " .. tostring(specID))
 end
 
+-- Unlock spec-override tracing. Off by default; toggle with `/specov debug`.
+-- Both this file and EUI_UnlockMode.lua route through EllesmereUI._SOUDbg so
+-- the save path and the respec restore path print into the same stream.
+function EllesmereUI._SOUDbg(msg)
+    if not EllesmereUI._specOvUnlockDebug then return end
+    print("|cff0cd29f[SOUnlock]|r " .. tostring(msg))
+end
+
+-- Compact readable form for a stored aspect value (position table, anchor
+-- table, match key, grow string, remove-sentinel, or nil).
+function EllesmereUI._SOUFmt(v)
+    if v == nil then return "nil" end
+    if v == EllesmereUI.SPECOV_NIL then return "<remove>" end
+    if type(v) == "table" then
+        if v.point then
+            return string.format("%s/%s (%.1f,%.1f)",
+                tostring(v.point), tostring(v.relPoint or v.point), v.x or 0, v.y or 0)
+        end
+        if v.target then
+            return string.format("anchor->%s.%s (%s,%s)",
+                tostring(v.target), tostring(v.side), tostring(v.offsetX), tostring(v.offsetY))
+        end
+        return "{table}"
+    end
+    return tostring(v)
+end
+
 -------------------------------------------------------------------------------
 --  Storage
 -------------------------------------------------------------------------------
@@ -891,11 +918,23 @@ function EllesmereUI.SpecOverrides_ApplyUnlock(specID)
             end
         end
     end
+    if EllesmereUI._specOvUnlockDebug then
+        local dkeys, akeys = {}, {}
+        if desired then for k, gid in pairs(desired) do dkeys[#dkeys+1] = k.."="..tostring(gid) end end
+        for k, gid in pairs(s.applied) do akeys[#akeys+1] = k.."="..tostring(gid) end
+        EllesmereUI._SOUDbg(string.format("APPLYUNLOCK spec=%s  desired={%s}  applied-before={%s}",
+            tostring(specID), table.concat(dkeys, ", "), table.concat(akeys, ", ")))
+    end
     local changed = false
     for elementKey in pairs(s.applied) do
         if not (desired and desired[elementKey]) then
             if ApplyAspects(elementKey, s.baseline[elementKey], true) then changed = true end
             s.applied[elementKey] = nil
+            if EllesmereUI._specOvUnlockDebug then
+                EllesmereUI._SOUDbg(string.format("  RESTORE %s -> baseline pos=%s",
+                    tostring(elementKey),
+                    EllesmereUI._SOUFmt(s.baseline[elementKey] and s.baseline[elementKey].pos)))
+            end
         end
     end
     if desired then
@@ -903,6 +942,11 @@ function EllesmereUI.SpecOverrides_ApplyUnlock(specID)
             local entry = s.groups[gid][elementKey]
             if entry and ApplyAspects(elementKey, entry, true) then changed = true end
             s.applied[elementKey] = gid
+            if EllesmereUI._specOvUnlockDebug then
+                EllesmereUI._SOUDbg(string.format("  OVERLAY %s <- group %s pos=%s",
+                    tostring(elementKey), tostring(gid),
+                    EllesmereUI._SOUFmt(entry and entry.pos)))
+            end
         end
     end
     if changed then _unlockSettleWanted = true end
@@ -987,6 +1031,13 @@ function EllesmereUI.SpecOverrides_UnlockBank(elementKey, groupId, aspects, base
         entry[k] = type(v) == "table" and DeepCopy(v) or v
     end
     s.applied[elementKey] = groupId
+    if EllesmereUI._specOvUnlockDebug then
+        for k, v in pairs(aspects) do
+            EllesmereUI._SOUDbg(string.format("  BANK %s -> group %s  %s = %s  (baseline %s)",
+                tostring(elementKey), tostring(groupId), tostring(k),
+                EllesmereUI._SOUFmt(v), EllesmereUI._SOUFmt(base[k])))
+        end
+    end
 end
 
 --- Keeps the shared-baseline shadow current when a NON-member spec's normal
@@ -2823,8 +2874,43 @@ end
 -- /specov: debug dump of the override state (groups, entries, stored vs live
 -- values). Dev tool; inert unless invoked.
 SLASH_EUISPECOV1 = "/specov"
-SlashCmdList.EUISPECOV = function()
+SlashCmdList.EUISPECOV = function(msg)
     local p = print
+    msg = (msg or ""):lower():gsub("^%s+", ""):gsub("%s+$", "")
+
+    if msg == "debug" then
+        EllesmereUI._specOvUnlockDebug = not EllesmereUI._specOvUnlockDebug
+        p("|cff0cd29f[SOUnlock]|r tracing " ..
+            (EllesmereUI._specOvUnlockDebug and "|cff40ff40ON|r" or "|cffff6060OFF|r")
+            .. " -- open unlock mode, move an element, Save & Exit, then respec.")
+        return
+    end
+
+    if msg == "unlock" then
+        local s = GetUnlockStore()
+        if not s then p("|cff0cd29f[SOUnlock]|r no specUnlockOverrides store"); return end
+        p("|cff0cd29f[SOUnlock]|r unlock override store:")
+        for gid, ge in pairs(s.groups or {}) do
+            p(string.format("  group %s:", tostring(gid)))
+            for elementKey, entry in pairs(ge) do
+                local parts = {}
+                for k, v in pairs(entry) do parts[#parts+1] = k.."="..EllesmereUI._SOUFmt(v) end
+                p("    " .. tostring(elementKey) .. "  " .. table.concat(parts, "  "))
+            end
+        end
+        p("  baseline:")
+        for elementKey, base in pairs(s.baseline or {}) do
+            local parts = {}
+            for k, v in pairs(base) do parts[#parts+1] = k.."="..EllesmereUI._SOUFmt(v) end
+            p("    " .. tostring(elementKey) .. "  " .. table.concat(parts, "  "))
+        end
+        p("  applied:")
+        for elementKey, gid in pairs(s.applied or {}) do
+            p("    " .. tostring(elementKey) .. " -> group " .. tostring(gid))
+        end
+        return
+    end
+
     p("|cff0cd29f[SpecOv]|r activeSpec=" .. tostring(_activeSpec)
         .. "  currentSpec=" .. tostring(CurrentSpecID())
         .. "  editingAs=" .. tostring(_editGroup and _editGroup.name or "none")

@@ -3175,12 +3175,14 @@ ApplyAnchorPosition = function(childKey, targetKey, side, noMark, noMove, fromCa
             local gd = GetBarGrowDirActual(childKey)
             if gd and gd ~= "CENTER" then growSkip = true end
         end
+        -- Tag as anchor-derived so unlock spec-override routing doesn't bank
+        -- these follow positions as user Position edits (only real drags do).
         if growSkip then
-            pendingPositions[childKey] = { _anchored = true }
+            pendingPositions[childKey] = { _anchored = true, _derived = true }
         else
             pendingPositions[childKey] = {
                 point = "CENTER", relPoint = "CENTER",
-                x = bCenterX, y = bCenterY,
+                x = bCenterX, y = bCenterY, _derived = true,
             }
         end
     end
@@ -3361,7 +3363,7 @@ EllesmereUI.ReapplyAllUnlockAnchors = function()
 
     -- No position persistence here. Positions are only saved by
     -- unlock mode's Save & Exit (CommitPositions).
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -- Forced version of ReapplyAllUnlockAnchors: clears each child's points
@@ -3439,7 +3441,7 @@ EllesmereUI.ReapplyAllUnlockAnchorsForced = function()
 
     -- No position persistence here. Positions are only saved by
     -- unlock mode's Save & Exit (CommitPositions).
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -- UIParent-space center (x, y) of childKey's current anchor target, computed
@@ -3510,7 +3512,7 @@ EllesmereUI.ResyncAnchorOffsets = function()
     if EllesmereUI.SpecOverrides_UnlockSyncAnchorOffsets then
         EllesmereUI.SpecOverrides_UnlockSyncAnchorOffsets()
     end
-    wipe(pendingPositions)
+    if not EllesmereUI._unlockModeActive then wipe(pendingPositions) end -- don't drop a live session's unsaved drags before CommitPositions banks them
 end
 
 -------------------------------------------------------------------------------
@@ -7108,6 +7110,15 @@ local function CreateMover(barKey)
             pcall(elem.onLiveMove, self._barKey)
         end
 
+        if EllesmereUI._specOvUnlockDebug and EllesmereUI._SOUDbg then
+            EllesmereUI._SOUDbg(string.format(
+                "DRAGSTOP key=%s  moved=true  combat=%s  bar=%s  pending=%s  anchored=%s",
+                tostring(self._barKey), tostring(InCombatLockdown()),
+                tostring(GetBarFrame(self._barKey) ~= nil),
+                tostring(pendingPositions[self._barKey] ~= nil),
+                tostring(GetAnchorInfo(self._barKey) ~= nil)))
+        end
+
         -- Keep the mover selected after drag so arrow keys can nudge it.
         -- Drop frame level back to normal so it doesn't block other movers.
         if self._selected then
@@ -9828,7 +9839,11 @@ function EllesmereUI._unlockRouteSpecOvSave()
         t[aspect] = val
     end
     for key, pos in pairs(pendingPositions) do
-        Touch(key, "pos", pos == "RESET" and "RESET" or true)
+        if pos == "RESET" then
+            Touch(key, "pos", "RESET")
+        elseif not (type(pos) == "table" and pos._derived) then
+            Touch(key, "pos", true) -- skip anchor-derived follow positions; only user drags/nudges bank pos
+        end
     end
     for key in pairs(anchorDB) do
         if AnchorsDiffer(anchorDB[key], snapshotAnchors[key]) then Touch(key, "anchor", true) end
@@ -9853,16 +9868,27 @@ function EllesmereUI._unlockRouteSpecOvSave()
         if live ~= snapGrow then Touch(key, "grow", true) end
     end
 
+    if EllesmereUI._specOvUnlockDebug and EllesmereUI._SOUDbg then
+        local tkeys, pkeys = {}, {}
+        for k in pairs(touched) do tkeys[#tkeys+1] = k end
+        for k in pairs(pendingPositions) do pkeys[#pkeys+1] = k end
+        EllesmereUI._SOUDbg(string.format("SAVE route: special=%s  curSpec=%s  pending={%s}  touched={%s}",
+            tostring(special and special.name or special), tostring(curSpec),
+            table.concat(pkeys, ", "), table.concat(tkeys, ", ")))
+    end
+
     for key, t in pairs(touched) do
         -- Blocked subsystems always take the baseline path untouched.
         local blocked = key:sub(1, 5) == "TBBG_" or key:sub(1, 4) == "TBB_"
         local grp
+        local _dbgConflict
         if not blocked then
             if special then
                 -- Conflict-locked elements cannot be edited; anything that
                 -- still diffs (indirect writes) stays baseline-routed.
                 local conflict = EllesmereUI.SpecOverrides_UnlockConflictGroup
                     and EllesmereUI.SpecOverrides_UnlockConflictGroup(key, special)
+                _dbgConflict = conflict
                 if not conflict then grp = special end
             elseif curSpec and EllesmereUI.SpecOverrides_UnlockOwner then
                 grp = EllesmereUI.SpecOverrides_UnlockOwner(key, curSpec)
@@ -9908,12 +9934,29 @@ function EllesmereUI._unlockRouteSpecOvSave()
         -- A dragged element whose live position could not be resolved leaves
         -- aspects.pos nil (never bank a coordless override entry).
 
+        if EllesmereUI._specOvUnlockDebug and EllesmereUI._SOUDbg then
+            local akeys = {}
+            for k in pairs(aspects) do akeys[#akeys+1] = k end
+            EllesmereUI._SOUDbg(string.format(
+                "  %s: blocked=%s conflict=%s grp=%s aspects={%s} pos=%s basePos=%s",
+                tostring(key), tostring(blocked),
+                tostring(_dbgConflict and (_dbgConflict.name or "yes") or "no"),
+                tostring(grp and (grp.name or grp.id) or "NONE (baseline)"),
+                table.concat(akeys, ", "),
+                EllesmereUI._SOUFmt(aspects.pos), EllesmereUI._SOUFmt(baseVals.pos)))
+        end
+
         if next(aspects) then
             if grp then
                 bank(key, grp.id, aspects, baseVals)
             elseif EllesmereUI.SpecOverrides_UnlockMirrorBaseline then
                 EllesmereUI.SpecOverrides_UnlockMirrorBaseline(key, aspects)
+                if EllesmereUI._specOvUnlockDebug and EllesmereUI._SOUDbg then
+                    EllesmereUI._SOUDbg("    -> MIRROR-BASELINE (no group; leaks to all specs)")
+                end
             end
+        elseif EllesmereUI._specOvUnlockDebug and EllesmereUI._SOUDbg then
+            EllesmereUI._SOUDbg("    -> SKIPPED (no aspects resolved; nothing banked)")
         end
     end
 
