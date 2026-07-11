@@ -344,9 +344,9 @@ local function SkinCheckbox(cb)
     wash:Hide()
     local hovering = false
     local function updState()
-        local checked = cb:GetChecked() and true or false
-        tick:SetShown(checked)
-        wash:SetShown(hovering or checked)
+        local checked = cb:GetChecked() -- may be a secret boolean under LFG taint
+        if tick.SetAlphaFromBoolean then tick:SetAlphaFromBoolean(checked) else tick:SetShown(checked) end
+        if issecretvalue(checked) then wash:SetShown(hovering) else wash:SetShown(hovering or checked) end
     end
     cb:HookScript("OnEnter", function() hovering = true; updState() end)
     cb:HookScript("OnLeave", function() hovering = false; updState() end)
@@ -706,7 +706,10 @@ local function ResolveRailSelection(getBtn, captured, holder)
     if captured ~= nil then return captured end
     for i = 1, 4 do
         local b = getBtn(i)
-        if b and b.GetChecked and b:GetChecked() then return i end
+        if b and b.GetChecked then
+            local c = b:GetChecked()
+            if not issecretvalue(c) and c then return i end
+        end
     end
     local glowSel, glowCount = nil, 0
     for i = 1, 4 do
@@ -1235,11 +1238,13 @@ end
 
 local function SaveAppRoles(dialog)
     if not (RememberRolesOn() and dialog and EllesmereUIDB) then return end
-    local function chk(btn) return (btn and btn.CheckButton and btn.CheckButton:GetChecked()) and true or false end
+    local function chk(btn) return btn and btn.CheckButton and btn.CheckButton:GetChecked() end
+    local t, h, d = chk(dialog.TankButton), chk(dialog.HealerButton), chk(dialog.DamagerButton)
+    if issecretvalue(t) or issecretvalue(h) or issecretvalue(d) then return end -- can't persist secret role state
     EllesmereUIDB.lfgSavedRoles = {
-        tank    = chk(dialog.TankButton),
-        healer  = chk(dialog.HealerButton),
-        damager = chk(dialog.DamagerButton),
+        tank    = t and true or false,
+        healer  = h and true or false,
+        damager = d and true or false,
     }
 end
 

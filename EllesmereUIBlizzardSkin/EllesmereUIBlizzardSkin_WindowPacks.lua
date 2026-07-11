@@ -21,6 +21,7 @@ local Theme = WSkin.Theme
 local GetFFD = WSkin.GetFFD
 local FFD = WSkin.FFD
 local SolidTex = WSkin.SolidTex
+local issecretvalue = issecretvalue or function() return false end
 
 -------------------------------------------------------------------------------
 --  Collections (Mounts / Pets / Toys / Heirlooms / Appearances / Campsites)
@@ -2467,9 +2468,9 @@ local function SkinGuildCheck(cb)
     wash:Hide()
     local hovering = false
     local function updState()
-        local checked = cb:GetChecked() and true or false
-        tick:SetShown(checked)
-        wash:SetShown(hovering or checked)
+        local checked = cb:GetChecked() -- may be a secret boolean under taint
+        if tick.SetAlphaFromBoolean then tick:SetAlphaFromBoolean(checked) else tick:SetShown(checked) end
+        if issecretvalue(checked) then wash:SetShown(hovering) else wash:SetShown(hovering or checked) end
     end
     cb:HookScript("OnEnter", function() hovering = true; updState() end)
     cb:HookScript("OnLeave", function() hovering = false; updState() end)
