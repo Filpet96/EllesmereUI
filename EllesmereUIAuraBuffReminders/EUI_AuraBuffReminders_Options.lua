@@ -111,9 +111,12 @@ initFrame:SetScript("OnEvent", function(self)
         return name:match("^(%S+)") or name
     end
 
-    --- Collect all potential preview icons for the player's class/spec
+    --- Collect all potential preview icons for the player's class/spec.
+    --- Only the "overlay" preview mode populates the in-panel header; "real"
+    --- previews on the live frame and "none" shows nothing here.
     local function CollectPreviewIcons()
         local icons = {}
+        do local d = DDB(); if d and (d.previewMode or "overlay") ~= "overlay" then return icons end end
         local _, playerClass = UnitClass("player")
         local specIdx = GetSpecialization()
         local specID = specIdx and GetSpecializationInfo(specIdx) or nil
@@ -313,7 +316,9 @@ initFrame:SetScript("OnEvent", function(self)
                 _previewContainer:ClearAllPoints()
                 _previewContainer:SetPoint("CENTER", _previewContainer:GetParent(), "CENTER", 0, 0)
             end
-            local TOTAL_H = 80
+            -- Grow the header with the icon size so larger scales are not clipped
+            -- (min 80 keeps the small-icon layout unchanged).
+            local TOTAL_H = math.max(80, CONTAINER_H + 28)
             _eabrHeaderBaseH = TOTAL_H
             local hintH = (_previewHintFS and _previewHintFS:IsShown()) and 35 or 0
             -- Use the silent variant so resizing the header never triggers
@@ -509,8 +514,12 @@ initFrame:SetScript("OnEvent", function(self)
             -- SetContentHeader collapse the content header to 0px, so the whole
             -- preview vanished whenever a toggle left the icon count unchanged
             -- (inky/healthstone, augment rune, pet, or a raid buff/aura not for
-            -- this class). Match the full-build height (base 80 + hint row).
-            return 80 + ((not IsPreviewHintDismissed()) and 35 or 0)
+            -- this class). Match the size-aware full-build height (+ hint row).
+            local textYOffR = d and d.textYOffset or -2
+            local textSzR = d and d.textSize or 11
+            local overhangR = showText and (math.abs(textYOffR) + textSzR) or 0
+            local baseR = math.max(80, sz + overhangR + 28)
+            return baseR + ((#_previewIcons > 0 and not IsPreviewHintDismissed()) and 35 or 0)
         end
 
         -- Container for icons (centered within hardcoded 80px header)
@@ -596,8 +605,10 @@ initFrame:SetScript("OnEvent", function(self)
         if _previewHintFS and not _previewHintFS:GetParent() then
             _previewHintFS = nil
         end
-        local hintShown = not IsPreviewHintDismissed()
-        local TOTAL_H = 80
+        -- No clickable icons in Real/No Preview modes, so skip the click hint.
+        local hintShown = (#_previewIcons > 0) and not IsPreviewHintDismissed()
+        -- Size-aware base height so large icon scales are not clipped (min 80).
+        local TOTAL_H = math.max(80, sz + textOverhang + 28)
         _eabrHeaderBaseH = TOTAL_H
 
         if hintShown then
@@ -635,6 +646,266 @@ initFrame:SetScript("OnEvent", function(self)
         cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
         cogBtn:SetScript("OnClick", function(self) showFn(self) end)
         return cogBtn
+    end
+
+    ---------------------------------------------------------------------------
+    --  Per-section "Where to Show" + "Show When" multi-selects
+    --  Difficulty visibility is a per-section checkbox dropdown (not per-spell).
+    --  The stored table keeps only unchecked buckets (value false); an absent
+    --  bucket = shown. Buckets mirror EABR.CurrentWhereBucket in the core file.
+    ---------------------------------------------------------------------------
+    local WHERE_ITEMS = {
+        { key="open_world",        label="Open World" },
+        { key="raid_mythic",       label="Mythic Raid" },
+        { key="raid_heroic",       label="Heroic Raid" },
+        { key="raid_normal_lfr",   label="Normal/LFR Raid" },
+        { key="dungeon_mythic",    label="Mythic Dungeons" },
+        { key="dungeon_nonmythic", label="Non-Mythic Dungeons" },
+        { key="timewalking",       label="Timewalking" },
+        { key="delve",             label="Delve" },
+        -- Orthogonal state gate (not a location): unchecking hides this section's
+        -- reminders while in combat. See EABR.SectionShows in the core file.
+        { key="in_combat",         label="In Combat" },
+    }
+    local SHOWWHEN_ITEMS = {
+        { key="othersMissing", label="Others are missing my buff" },
+        { key="iAmMissing",    label="I am missing others' buffs" },
+    }
+
+    -- Getter/setter closures for a "Where to Show" multi-select bound to a
+    -- store()-returned whereToShow table. Values are stored explicitly
+    -- (true/false) rather than nil-for-on: the SavedVariables layer re-merges
+    -- default keys on load, so an absent bucket whose default is false would
+    -- silently flip back off across a logout.
+    local function WhereGet(store) return function(k) local t = store(); return not (t and t[k] == false) end end
+    local function WhereSet(store, onChange)
+        return function(k, v)
+            local t = store(); if not t then return end
+            t[k] = v and true or false
+            if onChange then onChange() end
+        end
+    end
+    -- Getter/setter closures for a "Show When" multi-select (explicit booleans).
+    local function WhenGet(store) return function(k) local t = store(); return t and t[k] == true end end
+    local function WhenSet(store, onChange)
+        return function(k, v)
+            local t = store(); if not t then return end
+            t[k] = v and true or false
+            if onChange then onChange() end
+        end
+    end
+
+    -- Per-section "Where to Show" accessors (created on demand).
+    local function RWhere() local r = RDB(); if not r then return nil end; r.whereToShow = r.whereToShow or {}; return r.whereToShow end
+    local function AWhere() local a = ADB(); if not a then return nil end; a.whereToShow = a.whereToShow or {}; return a.whereToShow end
+    local function CWhere() local c = CDB(); if not c then return nil end; c.whereToShow = c.whereToShow or {}; return c.whereToShow end
+    local function CSpecialWhere() local c = CDB(); if not c then return nil end; c.specialsWhereToShow = c.specialsWhereToShow or {}; return c.specialsWhereToShow end
+    -- Raid buffs "Show When" accessor (created on demand).
+    local function RShowWhen() local r = RDB(); if not r then return nil end; r.showWhen = r.showWhen or {}; return r.showWhen end
+
+    -- Shared reminder-sound list (built + LSM-populated by the QoL module and
+    -- exposed on EllesmereUI). Falls back to just "None" if unavailable.
+    local function SoundNamesOrder()
+        local names = EllesmereUI._groupDeathSoundNames or { none = "None" }
+        local order = EllesmereUI._groupDeathSoundOrder or { "none" }
+        return names, order
+    end
+
+    -- Inline cog holding a single "Sound" dropdown bound to getSec()[field]
+    -- ("none"/nil = silent). One reminder sound applies to the whole section;
+    -- selecting a sound previews it once.
+    local function AddSectionSoundCog(rgn, getSec, field)
+        local names, order = SoundNamesOrder()
+        local rows = { {
+            type="dropdown", label="Sound",
+            tooltip="Play a sound once when a reminder in this section newly appears.",
+            values=names, order=order,
+            get=function() local t = getSec(); return (t and t[field]) or "none" end,
+            set=function(v)
+                local t = getSec(); if not t then return end
+                if v == "none" then t[field] = nil else t[field] = v end
+                local paths = EllesmereUI._groupDeathSoundPaths
+                local p = paths and paths[v]
+                if p then PlaySoundFile(p, "Master") end
+            end,
+        } }
+        local _, cogShow = EllesmereUI.BuildCogPopup({ title="Reminder Sound", rows=rows, minWidth=220 })
+        return MakeCogBtn(rgn, cogShow)
+    end
+
+    -- Per-section control dual-row: a "Where to Show" checkbox dropdown on the
+    -- left and, for raid buffs, a "Show When" checkbox dropdown on the right; a
+    -- reminder-sound cog sits next to whichever dropdown is on the right.
+    --   cfg.whereStore      -> fn returning the section whereToShow table
+    --   cfg.showWhenStore   -> fn returning the raid-buff showWhen table (or nil)
+    --   cfg.soundSec/soundField -> section table getter + sound field name
+    --   cfg.onChange        -> refresh callback
+    --   cfg.onShowWhenChange-> extra callback when "Show When" changes (registration)
+    local function SectionControlRow(parent, y, cfg)
+        local W = EllesmereUI.Widgets
+        local PP = EllesmereUI.PanelPP
+        local rightCfg
+        if cfg.showWhenStore then
+            rightCfg = { type="dropdown", text="Show When", tooltip=cfg.showWhenTooltip,
+                values={ _placeholder="..." }, order={ "_placeholder" },
+                getValue=function() return "_placeholder" end, setValue=function() end }
+        else
+            rightCfg = nil
+        end
+        local row, h = W:DualRow(parent, y,
+            { type="dropdown", text="Where to Show", tooltip=cfg.whereTooltip,
+              values={ _placeholder="..." }, order={ "_placeholder" },
+              getValue=function() return "_placeholder" end, setValue=function() end },
+            rightCfg)
+
+        local lrgn = row._leftRegion
+        if lrgn._control then lrgn._control:Hide() end
+        local whereDD, whereRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+            lrgn, 220, lrgn:GetFrameLevel() + 2, WHERE_ITEMS,
+            WhereGet(cfg.whereStore), WhereSet(cfg.whereStore, cfg.onChange))
+        PP.Point(whereDD, "RIGHT", lrgn, "RIGHT", -20, 0)
+        lrgn._control = whereDD
+        lrgn._lastInline = nil
+        EllesmereUI.RegisterWidgetRefresh(whereRefresh)
+
+        if cfg.showWhenStore then
+            local rrgn = row._rightRegion
+            if rrgn._control then rrgn._control:Hide() end
+            local whenDD, whenRefresh = EllesmereUI.BuildVisOptsCBDropdown(
+                rrgn, 220, rrgn:GetFrameLevel() + 2, SHOWWHEN_ITEMS,
+                WhenGet(cfg.showWhenStore),
+                WhenSet(cfg.showWhenStore, function()
+                    if cfg.onShowWhenChange then cfg.onShowWhenChange() end
+                    if cfg.onChange then cfg.onChange() end
+                end))
+            PP.Point(whenDD, "RIGHT", rrgn, "RIGHT", -20, 0)
+            rrgn._control = whenDD
+            rrgn._lastInline = nil
+            EllesmereUI.RegisterWidgetRefresh(whenRefresh)
+            if cfg.soundSec then AddSectionSoundCog(rrgn, cfg.soundSec, cfg.soundField or "sectionSound") end
+        elseif cfg.soundSec then
+            AddSectionSoundCog(lrgn, cfg.soundSec, cfg.soundField or "sectionSound")
+        end
+        return row, h
+    end
+
+    local function AddMinSuffix(threshRow, leftLabel, rightLabel)
+        for _, rgn in ipairs({threshRow._leftRegion, threshRow._rightRegion}) do
+            local labelText = rgn == threshRow._leftRegion and leftLabel or rightLabel
+            local suffix = rgn:CreateFontString(nil, "OVERLAY")
+            suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
+            suffix:SetTextColor(1, 1, 1, 0.35)
+            local found
+            for i = 1, rgn:GetNumRegions() do
+                local reg = select(i, rgn:GetRegions())
+                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == labelText then
+                    found = reg; break
+                end
+            end
+            if found then
+                suffix:SetPoint("LEFT", found, "RIGHT", 5, -1)
+            end
+            suffix:SetText(EllesmereUI.L("(min)"))
+        end
+    end
+
+    -- Global + per-section "show below" thresholds (minutes). Display holds the
+    -- defaults; each section can override via useDefaultTiming / useDefaultField.
+    local SHOW_UNDER_TOOLTIP =
+        "Show reminders when remaining buff time is below this many minutes.\n0 = only when fully expired.\nApplies everywhere this section can appear."
+    local SHOW_UNDER_MPLUS_TOOLTIP =
+        "During Mythic+ keystone runs, use this threshold instead of Show Below.\n0 = only when fully expired."
+
+    local function DefaultTimingRow(parent, y)
+        local W = EllesmereUI.Widgets
+        local row, h = W:DualRow(parent, y,
+            { type="slider", text="Show Below", min=0, max=60, step=1, trackWidth=120,
+              tooltip=SHOW_UNDER_TOOLTIP,
+              getValue=function() local d = DDB(); return d and d.showUnder or 5 end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.showUnder = v
+                  RefreshAll(); EllesmereUI:RefreshPage()
+              end },
+            { type="slider", text="Mythic+: Show Below", min=0, max=60, step=1, trackWidth=120,
+              tooltip=SHOW_UNDER_MPLUS_TOOLTIP,
+              getValue=function() local d = DDB(); return d and d.showUnderMPlus or 40 end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.showUnderMPlus = v
+                  RefreshAll(); EllesmereUI:RefreshPage()
+              end }
+        )
+        AddMinSuffix(row, "Show Below", "Mythic+: Show Below")
+        return row, h
+    end
+
+    local function SectionTimingBlock(parent, y, cfg)
+        local W = EllesmereUI.Widgets
+        local store = cfg.store
+        local useDefaultField = cfg.useDefaultField or "useDefaultTiming"
+        local showField = cfg.showField or "showUnder"
+        local mplusField = cfg.mplusField or "showUnderMPlus"
+        local function UsesDefault()
+            local t = store()
+            return not t or t[useDefaultField] ~= false
+        end
+        local function GetGeneral()
+            local t = store()
+            local d = DDB()
+            if t and t[useDefaultField] == false and t[showField] ~= nil then
+                return t[showField]
+            end
+            return d and d.showUnder or 5
+        end
+        local function GetMplus()
+            local t = store()
+            local d = DDB()
+            if t and t[useDefaultField] == false and t[mplusField] ~= nil then
+                return t[mplusField]
+            end
+            return d and d.showUnderMPlus or 40
+        end
+        local _, h = W:DualRow(parent, y,
+            { type="toggle", text="Use Default Timing",
+              tooltip="When on, uses the Display section Show Below values above.\nWhen off, set custom thresholds for this section below.",
+              getValue=function() return UsesDefault() end,
+              setValue=function(v)
+                  local t = store(); if not t then return end
+                  if v then
+                      t[useDefaultField] = true
+                  else
+                      local d = DDB()
+                      if t[showField] == nil then t[showField] = d and d.showUnder or 5 end
+                      if t[mplusField] == nil then t[mplusField] = d and d.showUnderMPlus or 40 end
+                      t[useDefaultField] = false
+                  end
+                  if cfg.onChange then cfg.onChange() end
+                  EllesmereUI:RefreshPage()
+              end }
+        );  y = y - h
+        local row, h2 = W:DualRow(parent, y,
+            { type="slider", text="Show Below", min=0, max=60, step=1, trackWidth=120,
+              tooltip=SHOW_UNDER_TOOLTIP,
+              disabled=UsesDefault,
+              disabledTooltip="Use Default Timing",
+              getValue=GetGeneral,
+              setValue=function(v)
+                  local t = store(); if not t then return end
+                  t[showField] = v
+                  if cfg.onChange then cfg.onChange() end
+              end },
+            { type="slider", text="Mythic+: Show Below", min=0, max=60, step=1, trackWidth=120,
+              tooltip=SHOW_UNDER_MPLUS_TOOLTIP,
+              disabled=UsesDefault,
+              disabledTooltip="Use Default Timing",
+              getValue=GetMplus,
+              setValue=function(v)
+                  local t = store(); if not t then return end
+                  t[mplusField] = v
+                  if cfg.onChange then cfg.onChange() end
+              end }
+        )
+        AddMinSuffix(row, "Show Below", "Mythic+: Show Below")
+        return row, h + h2
     end
 
     ---------------------------------------------------------------------------
@@ -743,6 +1014,27 @@ initFrame:SetScript("OnEvent", function(self)
                     if not item.getVal() then label:SetAlpha(0.5) end
                 end)
 
+                -- Optional per-item cog (difficulty multi-select + open world, etc.)
+                -- sits just left of the checkbox and floats above the cell click area.
+                if item.cogRows then
+                    local _, cogShow = EllesmereUI.BuildCogPopup({
+                        title = item.cogTitle or "Reminder Conditions",
+                        rows = item.cogRows,
+                        minWidth = 220,
+                    })
+                    local cogBtn = CreateFrame("Button", nil, cell)
+                    cogBtn:SetSize(16, 16)
+                    cogBtn:SetPoint("RIGHT", box, "LEFT", -10, 0)
+                    cogBtn:SetFrameLevel(btn:GetFrameLevel() + 5)
+                    cogBtn:SetAlpha(0.4)
+                    local cogTex = cogBtn:CreateTexture(nil, "OVERLAY")
+                    cogTex:SetAllPoints()
+                    cogTex:SetTexture(EllesmereUI.COGS_ICON)
+                    cogBtn:SetScript("OnEnter", function(self) self:SetAlpha(0.75) end)
+                    cogBtn:SetScript("OnLeave", function(self) self:SetAlpha(0.4) end)
+                    cogBtn:SetScript("OnClick", function(self) cogShow(self) end)
+                end
+
                 EllesmereUI.RegisterWidgetRefresh(ApplyVisual)
 
                 -- Store cell reference for preview click navigation
@@ -812,49 +1104,6 @@ initFrame:SetScript("OnEvent", function(self)
                   UpdatePreviewHeader()
               end }
         );  y = y - h
-
-        -- Row 2: Party Show Consumes Below | Raid Show Consumes Below
-        local threshRow
-        threshRow, h = W:DualRow(parent, y,
-            { type="slider", text="Party: Show Consumes Below", min=0, max=60, step=1,
-              trackWidth=120,
-              tooltip="In Mythic Dungeons, show consumables reminders\nwhen the remaining buff time is less than this amount",
-              getValue=function() local d = DDB(); return d and d.showUnderDurationDungeon or 0 end,
-              setValue=function(v)
-                  local d = DDB(); if not d then return end; d.showUnderDurationDungeon = v
-                  RefreshAll()
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="slider", text="Raid: Show Consumes Below", min=0, max=15, step=1,
-              trackWidth=120,
-              tooltip="In Raids, show consumables reminders\nwhen the remaining buff time is less than this amount",
-              getValue=function() local d = DDB(); return d and d.showUnderDurationRaid or 0 end,
-              setValue=function(v)
-                  local d = DDB(); if not d then return end; d.showUnderDurationRaid = v
-                  RefreshAll()
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-
-        -- Add "(min)" suffix in smaller, dimmer text on both sliders
-        for _, rgn in ipairs({threshRow._leftRegion, threshRow._rightRegion}) do
-            local labelText = rgn == threshRow._leftRegion
-                and "Party: Show Consumes Below" or "Raid: Show Consumes Below"
-            local suffix = rgn:CreateFontString(nil, "OVERLAY")
-            suffix:SetFont(EllesmereUI.EXPRESSWAY, 11, "")
-            suffix:SetTextColor(1, 1, 1, 0.35)
-            local found
-            for i = 1, rgn:GetNumRegions() do
-                local reg = select(i, rgn:GetRegions())
-                if reg and reg.GetText and EllesmereUI.EnKey(reg:GetText()) == labelText then
-                    found = reg; break
-                end
-            end
-            if found then
-                suffix:SetPoint("LEFT", found, "RIGHT", 5, -1)
-            end
-            suffix:SetText(EllesmereUI.L("(min)"))
-        end
 
         -----------------------------------------------------------------------
         --  DISPLAY section
@@ -1038,13 +1287,17 @@ initFrame:SetScript("OnEvent", function(self)
             MakeCogBtn(rgn, cogShow, nil, EllesmereUI.DIRECTIONS_ICON)
         end
 
-        -- Row 5: Opacity | Frame Strata
+        -- Row 3: Preview Mode | Frame Strata
         _, h = W:DualRow(parent, y,
-            { type="slider", text="Opacity", min=0, max=1, step=0.05,
-              getValue=function() local d = DDB(); return d and d.opacity or 1 end,
+            { type="dropdown", text="Preview Mode",
+              tooltip="How reminders preview while this settings panel is open:\nOverlay Preview - show sample icons in the panel header above.\nReal Preview - force all enabled reminders onto the real on-screen frame so you can position and style them.\nNo Preview - show nothing.",
+              values={ overlay="Overlay Preview", real="Real Preview", none="No Preview" },
+              order={ "overlay", "real", "none" },
+              getValue=function() local d = DDB(); return d and d.previewMode or "overlay" end,
               setValue=function(v)
-                  local d = DDB(); if not d then return end; d.opacity = v
-                  RefreshAll(); UpdatePreviewHeader()
+                  local d = DDB(); if not d then return end; d.previewMode = v
+                  if _G._EABR_ApplyPreviewMode then _G._EABR_ApplyPreviewMode() end
+                  RebuildPreviewHeader()
               end },
             { type="dropdown", text="Frame Strata",
               values=_G._EABR_STRATA_VALUES or {MEDIUM="Medium"},
@@ -1056,6 +1309,18 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
+        -- Row 4: Opacity (full width)
+        _, h = W:DualRow(parent, y,
+            { type="slider", text="Opacity", min=0, max=1, step=0.05,
+              getValue=function() local d = DDB(); return d and d.opacity or 1 end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.opacity = v
+                  RefreshAll(); UpdatePreviewHeader()
+              end }
+        );  y = y - h
+
+        _, h = DefaultTimingRow(parent, y);  y = y - h
+
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
         -----------------------------------------------------------------------
@@ -1064,29 +1329,30 @@ initFrame:SetScript("OnEvent", function(self)
         local raidBufHdr
         raidBufHdr, h = W:SectionHeader(parent, SECTION_RAID_BUFFS, y);  y = y - h
 
-        -- Show Others Missing | Show Buffs In Open World
-        local raidBufFirstRow
-        raidBufFirstRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Others Missing",
-              getValue=function() local r = RDB(); return r and r.showOthersMissing end,
-              setValue=function(v) local r = RDB(); if r then r.showOthersMissing = v; if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end; RefreshAll() end end },
-            { type="toggle", text="Show Buffs In Open World",
-              tooltip="Reminders are always hidden in rested areas (cities and inns).",
-              getValue=function() local r = RDB(); return r and r.showNonInstanced end,
-              setValue=function(v) local r = RDB(); if r then r.showNonInstanced = v; RefreshAll() end end }
-        );  y = y - h
+        -- Where to Show | Show When (+ reminder sound cog)
+        _, h = SectionControlRow(parent, y, {
+            whereStore = RWhere,
+            whereTooltip = "Pick which content this section's reminders appear in.\nRested areas (cities and inns) always stay hidden.",
+            showWhenStore = RShowWhen,
+            showWhenTooltip = "Others are missing my buff: remind when a groupmate is missing a buff you can cast.\nI am missing others' buffs: remind when you are missing a buff a groupmate could give you (only shown when someone who can cast it is present). Off by default.",
+            soundSec = RDB, soundField = "sectionSound",
+            onChange = RefreshAll,
+            onShowWhenChange = function() if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end end,
+        });  y = y - h
+        _, h = SectionTimingBlock(parent, y, { store = RDB, onChange = RefreshAll });  y = y - h
 
-        -- 4-column checkbox grid for individual raid buffs
+        -- 4-column checkbox grid: enable/disable each raid buff.
         do
             local RAID_BUFFS = _G._EABR_RAID_BUFFS or {}
             local gridItems = {}
             for _, buff in ipairs(RAID_BUFFS) do
+                local bkey = buff.key
                 gridItems[#gridItems+1] = {
                     label = _G._EABR_SpellName(buff.castSpell, buff.name),
                     classToken = buff.class,
-                    key = buff.key,
-                    getVal = function() local r = RDB(); return r and r.enabled and r.enabled[buff.key] end,
-                    setVal = function(v) local r = RDB(); if r and r.enabled then r.enabled[buff.key] = v end end,
+                    key = bkey,
+                    getVal = function() local r = RDB(); return r and r.enabled and r.enabled[bkey] end,
+                    setVal = function(v) local r = RDB(); if r and r.enabled then r.enabled[bkey] = v end end,
                 }
             end
             h = BuildCheckboxGrid(parent, y, gridItems, function() RefreshAll(); RebuildPreviewHeader() end, _gridCellRefs)
@@ -1101,30 +1367,27 @@ initFrame:SetScript("OnEvent", function(self)
         local auraHdr
         auraHdr, h = W:SectionHeader(parent, SECTION_AURAS, y);  y = y - h
 
-        -- Show Auras In Open World | Show Specials In Open World
-        local auraFirstRow
-        auraFirstRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Auras In Open World",
-              tooltip="Reminders are always hidden in rested areas (cities and inns).",
-              getValue=function() local a = ADB(); return a and a.showNonInstanced end,
-              setValue=function(v) local a = ADB(); if a then a.showNonInstanced = v; RefreshAll() end end },
-            { type="toggle", text="Show Specials In Open World",
-              tooltip="Show special reminders while out in the open world.\nReminders are always hidden in rested areas (cities and inns).",
-              getValue=function() local c = CDB(); return c and c.showSpecialsNonInstanced end,
-              setValue=function(v) local c = CDB(); if c then c.showSpecialsNonInstanced = v; RefreshAll() end end }
-        );  y = y - h
+        -- Where to Show (+ reminder sound cog)
+        _, h = SectionControlRow(parent, y, {
+            whereStore = AWhere,
+            whereTooltip = "Pick which content these aura reminders appear in.\nRested areas (cities and inns) always stay hidden.",
+            soundSec = ADB, soundField = "sectionSound",
+            onChange = RefreshAll,
+        });  y = y - h
+        _, h = SectionTimingBlock(parent, y, { store = ADB, onChange = RefreshAll });  y = y - h
 
-        -- 4-column checkbox grid for individual auras
+        -- 4-column checkbox grid: enable/disable each aura.
         do
             local AURAS = _G._EABR_AURAS or {}
             local gridItems = {}
             for _, aura in ipairs(AURAS) do
+                local akey = aura.key
                 gridItems[#gridItems+1] = {
                     label = _G._EABR_SpellName(aura.castSpell, aura.name),
                     classToken = aura.class,
-                    key = aura.key,
-                    getVal = function() local a = ADB(); return a and a.enabled and a.enabled[aura.key] end,
-                    setVal = function(v) local a = ADB(); if a and a.enabled then a.enabled[aura.key] = v end end,
+                    key = akey,
+                    getVal = function() local a = ADB(); return a and a.enabled and a.enabled[akey] end,
+                    setVal = function(v) local a = ADB(); if a and a.enabled then a.enabled[akey] = v end end,
                 }
             end
             h = BuildCheckboxGrid(parent, y, gridItems, function() RefreshAll(); RebuildPreviewHeader() end, _gridCellRefs)
@@ -1136,7 +1399,21 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  ROGUE POISONS sub-section
         -----------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, SECTION_ROGUE, y);  y = y - h
+        local rogueHdr
+        rogueHdr, h = W:SectionHeader(parent, SECTION_ROGUE, y);  y = y - h
+        _, h = SectionControlRow(parent, y, {
+            whereStore = CSpecialWhere,
+            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            soundSec = CDB, soundField = "specialsSound",
+            onChange = RefreshAll,
+        });  y = y - h
+        _, h = SectionTimingBlock(parent, y, {
+            store = CDB,
+            useDefaultField = "specialsUseDefaultTiming",
+            showField = "specialsShowUnder",
+            mplusField = "specialsShowUnderMPlus",
+            onChange = RefreshAll,
+        });  y = y - h
 
         do
             local POISONS = _G._EABR_ROGUE_POISONS or {}
@@ -1159,7 +1436,14 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  PALADIN RITES sub-section
         -----------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, SECTION_PALADIN, y);  y = y - h
+        local paladinHdr
+        paladinHdr, h = W:SectionHeader(parent, SECTION_PALADIN, y);  y = y - h
+        _, h = SectionControlRow(parent, y, {
+            whereStore = CSpecialWhere,
+            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            soundSec = CDB, soundField = "specialsSound",
+            onChange = RefreshAll,
+        });  y = y - h
 
         do
             local RITES = _G._EABR_PALADIN_RITES or {}
@@ -1182,7 +1466,14 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  SHAMAN IMBUES & SHIELDS sub-section
         -----------------------------------------------------------------------
-        _, h = W:SectionHeader(parent, SECTION_SHAMAN, y);  y = y - h
+        local shamanHdr
+        shamanHdr, h = W:SectionHeader(parent, SECTION_SHAMAN, y);  y = y - h
+        _, h = SectionControlRow(parent, y, {
+            whereStore = CSpecialWhere,
+            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            soundSec = CDB, soundField = "specialsSound",
+            onChange = RefreshAll,
+        });  y = y - h
 
         do
             local gridItems = {}
@@ -1219,23 +1510,20 @@ initFrame:SetScript("OnEvent", function(self)
         petHdr, h = W:SectionHeader(parent, "PETS", y);  y = y - h
 
         local petFirstRow
-        petFirstRow, h = W:DualRow(parent, y,
-            { type="toggle", text="Missing Pet Reminder",
+        petFirstRow, h = W:TripleRow(parent, y,
+            { type="toggle", text="Missing Pet",
               tooltip="Show a reminder when you don't have an active pet summoned. Only applies to pet classes (Hunter, Warlock, Death Knight, Mage).",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.pet ~= false end,
               setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.pet = v; RefreshAll(); RebuildPreviewHeader() end end },
-            { type="toggle", text="Wrong Pet Reminder (Demo Lock)",
+            { type="toggle", text="Wrong Pet (Demo Lock)",
               tooltip="Show a reminder when your Demonology Warlock has the wrong pet summoned (not Felguard).",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.wrong_pet ~= false end,
-              setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.wrong_pet = v; RefreshAll(); RebuildPreviewHeader() end end }
-        );  y = y - h
-
-        _, h = W:DualRow(parent, y,
-            { type="toggle", text="Passive Pet Reminder",
+              setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.wrong_pet = v; RefreshAll(); RebuildPreviewHeader() end end },
+            { type="toggle", text="Passive Pet",
               tooltip="Show a reminder when your active pet is set to Passive stance. Only applies to pet classes (Hunter, Warlock, Death Knight, Mage).",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.pet_passive ~= false end,
               setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.pet_passive = v; RefreshAll(); RebuildPreviewHeader() end end },
-            { type="spacer" }
+            { 0.34, 0.33, 0.33 }
         );  y = y - h
 
         _eabrClickMappings.pet = { section = petHdr, target = petFirstRow }
@@ -1248,9 +1536,169 @@ initFrame:SetScript("OnEvent", function(self)
         local consumHdr
         consumHdr, h = W:SectionHeader(parent, SECTION_CONSUMABLES, y);  y = y - h
 
-        -- Flask toggle | Preferred Click to Buff dropdown
+        -- Where to Show (+ reminder sound cog)
+        _, h = SectionControlRow(parent, y, {
+            whereStore = CWhere,
+            whereTooltip = "Pick which content these consumable reminders appear in.\nRested areas (cities and inns) always stay hidden.",
+            soundSec = CDB, soundField = "sectionSound",
+            onChange = RefreshAll,
+        });  y = y - h
+        _, h = SectionTimingBlock(parent, y, { store = CDB, onChange = RefreshAll });  y = y - h
+
+        -- Show Without Item in Bags | Ready Check Mana Warning
+        row, h = W:DualRow(parent, y,
+            { type="toggle", text="Show Without Item in Bags",
+              tooltip="When on, flask/food/weapon reminders still show (dimmed) when you have no matching item in your bags, as a prompt to restock.\nWhen off, they are hidden entirely if you don't carry the item.",
+              getValue=function() local c = CDB(); return c and c.showWithoutItem ~= false end,
+              setValue=function(v) local c = CDB(); if c then c.showWithoutItem = v; RefreshAll() end end },
+            { type="toggle", text="Ready Check Mana Warning",
+              tooltip="Flashes LOW MANA during an out-of-combat raid ready check while you are a healer under 80% mana.",
+              getValue=function() local c = CDB(); return not c or c.rcManaWarn ~= false end,
+              setValue=function(v)
+                  local c = CDB(); if c then c.rcManaWarn = v end
+                  if not v and _G._EABR_RCWarnHidePreview then _G._EABR_RCWarnHidePreview() end
+                  if _G._EABR_RCWarnUpdateReg then _G._EABR_RCWarnUpdateReg() end
+                  EllesmereUI:RefreshPage()
+              end }
+        );  y = y - h
+
+        -- Inline: eyeball | cog | color swatch on Ready Check (right column)
+        do
+            local inlineRgn = row._rightRegion
+            local function rcwOff()
+                local c = CDB()
+                return c ~= nil and c.rcManaWarn == false
+            end
+            local rcwPreviewShown = false
+            local RefreshRcwEye
+
+            local swatch = EllesmereUI.BuildColorSwatch(inlineRgn, inlineRgn:GetFrameLevel() + 5,
+                function()
+                    local c = CDB()
+                    local col = c and c.rcManaWarnColor
+                    if col then return col.r, col.g, col.b, 1 end
+                    local mc = EllesmereUI.GetPowerColor and EllesmereUI.GetPowerColor("MANA")
+                    if mc then
+                        return math.min(mc.r * 1.5, 1), math.min(mc.g * 1.5, 1), math.min(mc.b * 1.5, 1), 1
+                    end
+                    return 0, 0.825, 1, 1
+                end,
+                function(r, g, b)
+                    local c = CDB(); if not c then return end
+                    c.rcManaWarnColor = { r = r, g = g, b = b }
+                    if _G._EABR_RCWarnApply then _G._EABR_RCWarnApply() end
+                end, false, 20)
+            swatch:SetPoint("RIGHT", inlineRgn._lastInline or inlineRgn._control, "LEFT", -12, 0)
+            inlineRgn._lastInline = swatch
+
+            local swatchBlock = CreateFrame("Frame", nil, swatch)
+            swatchBlock:SetAllPoints()
+            swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+            swatchBlock:EnableMouse(true)
+            swatchBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
+            end)
+            swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local function ShowPreviewFromCog()
+                rcwPreviewShown = true
+                if RefreshRcwEye then RefreshRcwEye() end
+                if _G._EABR_RCWarnPreview then _G._EABR_RCWarnPreview() end
+            end
+            local _, cogShow = EllesmereUI.BuildCogPopup({
+                title = "Mana Warning Settings",
+                rows = {
+                    { type="slider", label="Text Size", min=10, max=72, step=1,
+                      get=function() local c = CDB(); return c and c.rcManaWarnSize or 48 end,
+                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnSize = v
+                          if _G._EABR_RCWarnApply then _G._EABR_RCWarnApply() end end },
+                    { type="slider", label="X Offset", min=-600, max=600, step=1,
+                      get=function() local c = CDB(); return c and c.rcManaWarnX or 0 end,
+                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnX = v
+                          ShowPreviewFromCog() end },
+                    { type="slider", label="Y Offset", min=-600, max=600, step=1,
+                      get=function() local c = CDB(); return c and c.rcManaWarnY or 0 end,
+                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnY = v
+                          ShowPreviewFromCog() end },
+                },
+            })
+            local cogBtn = MakeCogBtn(inlineRgn, cogShow)
+
+            local cogBlock = CreateFrame("Frame", nil, cogBtn)
+            cogBlock:SetAllPoints()
+            cogBlock:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
+            cogBlock:EnableMouse(true)
+            cogBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
+            end)
+            cogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local EYE_VISIBLE   = EllesmereUI.MEDIA_PATH .. "icons\\eui-visible.png"
+            local EYE_INVISIBLE = EllesmereUI.MEDIA_PATH .. "icons\\eui-invisible.png"
+            local eyeBtn = CreateFrame("Button", nil, inlineRgn)
+            eyeBtn:SetSize(26, 26)
+            eyeBtn:SetPoint("RIGHT", inlineRgn._lastInline or inlineRgn._control, "LEFT", -8, 0)
+            inlineRgn._lastInline = eyeBtn
+            eyeBtn:SetFrameLevel(inlineRgn:GetFrameLevel() + 5)
+            eyeBtn:SetAlpha(0.4)
+            local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
+            eyeTex:SetAllPoints()
+            RefreshRcwEye = function()
+                eyeTex:SetTexture(rcwPreviewShown and EYE_INVISIBLE or EYE_VISIBLE)
+            end
+            RefreshRcwEye()
+            eyeBtn:SetScript("OnEnter", function(self)
+                self:SetAlpha(0.7)
+                EllesmereUI.ShowWidgetTooltip(self, "Preview mana warning")
+            end)
+            eyeBtn:SetScript("OnLeave", function(self)
+                EllesmereUI.HideWidgetTooltip()
+                self:SetAlpha(0.4)
+            end)
+            eyeBtn:SetScript("OnClick", function()
+                rcwPreviewShown = not rcwPreviewShown
+                RefreshRcwEye()
+                if rcwPreviewShown then
+                    if _G._EABR_RCWarnPreview then _G._EABR_RCWarnPreview() end
+                else
+                    if _G._EABR_RCWarnHidePreview then _G._EABR_RCWarnHidePreview() end
+                end
+            end)
+
+            local eyeBlock = CreateFrame("Frame", nil, eyeBtn)
+            eyeBlock:SetAllPoints()
+            eyeBlock:SetFrameLevel(eyeBtn:GetFrameLevel() + 10)
+            eyeBlock:EnableMouse(true)
+            eyeBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(eyeBtn, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
+            end)
+            eyeBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local function UpdateRcwInlinesDisabled()
+                local off = rcwOff()
+                if off then
+                    rcwPreviewShown = false
+                    RefreshRcwEye()
+                    swatch:SetAlpha(0.3);  swatchBlock:Show()
+                    cogBtn:SetAlpha(0.15); cogBlock:Show()
+                    eyeBtn:SetAlpha(0.15); eyeBlock:Show()
+                else
+                    swatch:SetAlpha(1)
+                    swatchBlock:Hide()
+                    cogBtn:SetAlpha(0.4); cogBlock:Hide()
+                    eyeBtn:SetAlpha(0.4); eyeBlock:Hide()
+                end
+            end
+            UpdateRcwInlinesDisabled()
+            EllesmereUI.RegisterWidgetRefresh(UpdateRcwInlinesDisabled)
+        end
+
+        -- One consumable per row: toggle on the left, its per-item control
+        -- (preferred item / zones) inline on the right.
         local consumFirstRow
-        local flaskRow
+        local flaskRow, foodRow, weaponEnchantRow, runeRow, healthstoneRow, inkyRow
+
+        -- Flask | Preferred (Click to Buff)
         do
             local FLASK_ITEMS = _G._EABR_FLASK_ITEMS or {}
             local flaskValues = { last_used = "Last Used" }
@@ -1263,7 +1711,7 @@ initFrame:SetScript("OnEvent", function(self)
                 { type="toggle", text="Flask",
                   getValue=function() local c = CDB(); return c and c.enabled and c.enabled.flask end,
                   setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.flask = v; RefreshAll(); RebuildPreviewHeader() end end },
-                { type="dropdown", text="Preferred Click to Buff", dropdownWidth=220,
+                { type="dropdown", text="Preferred (Click to Buff)", dropdownWidth=220,
                   values=flaskValues, order=flaskOrder,
                   getValue=function() local c = CDB(); return c and c.preferredFlask or "last_used" end,
                   setValue=function(v) local c = CDB(); if c then c.preferredFlask = v; RefreshAll() end end }
@@ -1271,8 +1719,7 @@ initFrame:SetScript("OnEvent", function(self)
             consumFirstRow = flaskRow
         end
 
-        -- Food toggle | Preferred Click to Buff dropdown
-        local foodRow
+        -- Food | Preferred (Click to Buff)
         do
             local FOOD_ITEMS = _G._EABR_FOOD_ITEMS or {}
             local foodValues = { last_used = "Last Used" }
@@ -1285,15 +1732,14 @@ initFrame:SetScript("OnEvent", function(self)
                 { type="toggle", text="Food",
                   getValue=function() local c = CDB(); return c and c.enabled and c.enabled.food end,
                   setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.food = v; RefreshAll(); RebuildPreviewHeader() end end },
-                { type="dropdown", text="Preferred Click to Buff", dropdownWidth=220,
+                { type="dropdown", text="Preferred (Click to Buff)", dropdownWidth=220,
                   values=foodValues, order=foodOrder,
                   getValue=function() local c = CDB(); return c and c.preferredFood or "last_used" end,
                   setValue=function(v) local c = CDB(); if c then c.preferredFood = v; RefreshAll() end end }
             );  y = y - h
         end
 
-        -- Weapon Enhancement toggle | Preferred Click to Buff dropdown
-        local weaponEnchantRow
+        -- Weapon Enhancement | Preferred (Click to Buff)
         do
             local WE_CHOICES = _G._EABR_WEAPON_ENCHANT_CHOICES or {}
             local weValues = { last_used = "Last Used" }
@@ -1306,51 +1752,46 @@ initFrame:SetScript("OnEvent", function(self)
                 { type="toggle", text="Weapon Enhancement",
                   getValue=function() local c = CDB(); return c and c.enabled and c.enabled.weapon_enchant end,
                   setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.weapon_enchant = v; RefreshAll(); RebuildPreviewHeader() end end },
-                { type="dropdown", text="Preferred Click to Buff", dropdownWidth=220,
+                { type="dropdown", text="Preferred (Click to Buff)", dropdownWidth=220,
                   values=weValues, order=weOrder,
                   getValue=function() local c = CDB(); return c and c.preferredWeaponEnchant or "last_used" end,
                   setValue=function(v) local c = CDB(); if c then c.preferredWeaponEnchant = v; RefreshAll() end end }
             );  y = y - h
         end
 
-        -- Augment Rune toggle | Display In dropdown
-        local runeRow
+        -- Augment Rune | Healthstone (neither has a per-item control)
         runeRow, h = W:DualRow(parent, y,
             { type="toggle", text="Augment Rune",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.augment_rune end,
               setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.augment_rune = v; RefreshAll(); RebuildPreviewHeader() end end },
-            { type="dropdown", text="Augment Reminder Only In:",
-              values={ mythic="Mythic Only", heroic_mythic="Heroic and Mythic", all="All Instanced Content" },
-              order={ "mythic", "heroic_mythic", "all" },
-              getValue=function() local c = CDB(); return c and c.runeDisplayMode or "mythic" end,
-              setValue=function(v) local c = CDB(); if c then c.runeDisplayMode = v; RefreshAll() end end }
-        );  y = y - h
-
-        -- Healthstone toggle | Inky Black Potion toggle
-        row, h = W:DualRow(parent, y,
             { type="toggle", text="Healthstone",
               tooltip="Remind you to grab a Healthstone when a Warlock is in your group.",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.healthstone ~= false end,
-              setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.healthstone = v; RefreshAll(); RebuildPreviewHeader() end end },
+              setValue=function(v) local c = CDB(); if c and c.enabled then c.enabled.healthstone = v; RefreshAll(); RebuildPreviewHeader() end end }
+        );  y = y - h
+        healthstoneRow = runeRow
+
+        -- Inky Black Potion | Choose Zones
+        inkyRow, h = W:DualRow(parent, y,
             { type="toggle", text="Inky Black Potion",
               getValue=function() local c = CDB(); return c and c.enabled and c.enabled.inky_black end,
               setValue=function(v)
                   local c = CDB(); if c and c.enabled then c.enabled.inky_black = v; RefreshAll(); RebuildPreviewHeader() end
                   EllesmereUI:RefreshPage()
-              end }
+              end },
+            { type="spacer" }
         );  y = y - h
-        local healthstoneRow = row
 
         -- Inline "Choose Zones" button on the right region (Inky Black)
         do
-            local rgn = row._rightRegion
+            local rgn = inkyRow._rightRegion
             local eg = EllesmereUI.ELLESMERE_GREEN or {r=0, g=0.82, b=0.62}
             local lerp = EllesmereUI.lerp
             local DARK_BG = EllesmereUI.DARK_BG or { r = 0.05, g = 0.07, b = 0.09 }
 
             local zoneBtn = CreateFrame("Button", nil, rgn)
             zoneBtn:SetSize(110, 24)
-            zoneBtn:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -10, 0)
+            zoneBtn:SetPoint("RIGHT", rgn, "RIGHT", -20, 0)
             zoneBtn:SetFrameLevel(rgn:GetFrameLevel() + 5)
             rgn._lastInline = zoneBtn
 
@@ -1435,157 +1876,6 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI.RegisterWidgetRefresh(UpdateZoneBtnDisabled)
         end
 
-        -- Ready Check Mana Warning toggle (eye | cog | swatch inline)
-        row, h = W:DualRow(parent, y,
-            { type="toggle", text="Ready Check Mana Warning",
-              tooltip="Flashes LOW MANA during an out-of-combat raid ready check while you are a healer under 80% mana.",
-              getValue=function() local c = CDB(); return not c or c.rcManaWarn ~= false end,
-              setValue=function(v)
-                  local c = CDB(); if c then c.rcManaWarn = v end
-                  if not v and _G._EABR_RCWarnHidePreview then _G._EABR_RCWarnHidePreview() end
-                  if _G._EABR_RCWarnUpdateReg then _G._EABR_RCWarnUpdateReg() end
-                  EllesmereUI:RefreshPage()
-              end },
-            { type="label", text="" }
-        );  y = y - h
-
-        -- Inline: eyeball | cog | color swatch on the mana warning toggle
-        do
-            local leftRgn = row._leftRegion
-            local function rcwOff()
-                local c = CDB()
-                return c ~= nil and c.rcManaWarn == false
-            end
-            local rcwPreviewShown = false
-            local RefreshRcwEye  -- assigned below; cog offset sliders flip the eye on
-
-            -- Color swatch (rightmost inline, closest to toggle). Default shows
-            -- the brightened mana color the warning uses when no custom is set.
-            local swatch = EllesmereUI.BuildColorSwatch(leftRgn, leftRgn:GetFrameLevel() + 5,
-                function()
-                    local c = CDB()
-                    local col = c and c.rcManaWarnColor
-                    if col then return col.r, col.g, col.b, 1 end
-                    local mc = EllesmereUI.GetPowerColor and EllesmereUI.GetPowerColor("MANA")
-                    if mc then
-                        return math.min(mc.r * 1.5, 1), math.min(mc.g * 1.5, 1), math.min(mc.b * 1.5, 1), 1
-                    end
-                    return 0, 0.825, 1, 1
-                end,
-                function(r, g, b)
-                    local c = CDB(); if not c then return end
-                    c.rcManaWarnColor = { r = r, g = g, b = b }
-                    if _G._EABR_RCWarnApply then _G._EABR_RCWarnApply() end
-                end, false, 20)
-            swatch:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -12, 0)
-            leftRgn._lastInline = swatch
-
-            local swatchBlock = CreateFrame("Frame", nil, swatch)
-            swatchBlock:SetAllPoints()
-            swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
-            swatchBlock:EnableMouse(true)
-            swatchBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
-            end)
-            swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Cog: Text Size + X/Y Offset. Offset edits force the preview on
-            -- (and light the eye) so the warning is visible while moving it.
-            local function ShowPreviewFromCog()
-                rcwPreviewShown = true
-                if RefreshRcwEye then RefreshRcwEye() end
-                if _G._EABR_RCWarnPreview then _G._EABR_RCWarnPreview() end
-            end
-            local _, cogShow = EllesmereUI.BuildCogPopup({
-                title = "Mana Warning Settings",
-                rows = {
-                    { type="slider", label="Text Size", min=10, max=72, step=1,
-                      get=function() local c = CDB(); return c and c.rcManaWarnSize or 48 end,
-                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnSize = v
-                          if _G._EABR_RCWarnApply then _G._EABR_RCWarnApply() end end },
-                    { type="slider", label="X Offset", min=-600, max=600, step=1,
-                      get=function() local c = CDB(); return c and c.rcManaWarnX or 0 end,
-                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnX = v
-                          ShowPreviewFromCog() end },
-                    { type="slider", label="Y Offset", min=-600, max=600, step=1,
-                      get=function() local c = CDB(); return c and c.rcManaWarnY or 0 end,
-                      set=function(v) local c = CDB(); if not c then return end; c.rcManaWarnY = v
-                          ShowPreviewFromCog() end },
-                },
-            })
-            local cogBtn = MakeCogBtn(leftRgn, cogShow)
-
-            local cogBlock = CreateFrame("Frame", nil, cogBtn)
-            cogBlock:SetAllPoints()
-            cogBlock:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
-            cogBlock:EnableMouse(true)
-            cogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
-            end)
-            cogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Eye icon toggles a live preview (left of cog)
-            local EYE_VISIBLE   = EllesmereUI.MEDIA_PATH .. "icons\\eui-visible.png"
-            local EYE_INVISIBLE = EllesmereUI.MEDIA_PATH .. "icons\\eui-invisible.png"
-            local eyeBtn = CreateFrame("Button", nil, leftRgn)
-            eyeBtn:SetSize(26, 26)
-            eyeBtn:SetPoint("RIGHT", leftRgn._lastInline or leftRgn._control, "LEFT", -8, 0)
-            leftRgn._lastInline = eyeBtn
-            eyeBtn:SetFrameLevel(leftRgn:GetFrameLevel() + 5)
-            eyeBtn:SetAlpha(0.4)
-            local eyeTex = eyeBtn:CreateTexture(nil, "OVERLAY")
-            eyeTex:SetAllPoints()
-            RefreshRcwEye = function()
-                eyeTex:SetTexture(rcwPreviewShown and EYE_INVISIBLE or EYE_VISIBLE)
-            end
-            RefreshRcwEye()
-            eyeBtn:SetScript("OnEnter", function(self)
-                self:SetAlpha(0.7)
-                EllesmereUI.ShowWidgetTooltip(self, "Preview mana warning")
-            end)
-            eyeBtn:SetScript("OnLeave", function(self)
-                EllesmereUI.HideWidgetTooltip()
-                self:SetAlpha(0.4)
-            end)
-            eyeBtn:SetScript("OnClick", function()
-                rcwPreviewShown = not rcwPreviewShown
-                RefreshRcwEye()
-                if rcwPreviewShown then
-                    if _G._EABR_RCWarnPreview then _G._EABR_RCWarnPreview() end
-                else
-                    if _G._EABR_RCWarnHidePreview then _G._EABR_RCWarnHidePreview() end
-                end
-            end)
-
-            local eyeBlock = CreateFrame("Frame", nil, eyeBtn)
-            eyeBlock:SetAllPoints()
-            eyeBlock:SetFrameLevel(eyeBtn:GetFrameLevel() + 10)
-            eyeBlock:EnableMouse(true)
-            eyeBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(eyeBtn, EllesmereUI.DisabledTooltip("Ready Check Mana Warning"))
-            end)
-            eyeBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Shared disabled-state refresh for all three inlines
-            local function UpdateRcwInlinesDisabled()
-                local off = rcwOff()
-                if off then
-                    rcwPreviewShown = false
-                    RefreshRcwEye()
-                    swatch:SetAlpha(0.3);  swatchBlock:Show()
-                    cogBtn:SetAlpha(0.15); cogBlock:Show()
-                    eyeBtn:SetAlpha(0.15); eyeBlock:Show()
-                else
-                    swatch:SetAlpha(1)
-                    swatchBlock:Hide()
-                    cogBtn:SetAlpha(0.4); cogBlock:Hide()
-                    eyeBtn:SetAlpha(0.4); eyeBlock:Hide()
-                end
-            end
-            UpdateRcwInlinesDisabled()
-            EllesmereUI.RegisterWidgetRefresh(UpdateRcwInlinesDisabled)
-        end
-
         -- Wire up click mappings for preview hit overlays. Both display-level
         -- targets are row2 -- the first DISPLAY row, which also hosts the Show
         -- Text toggle. (These previously pointed at names that were never
@@ -1593,8 +1883,8 @@ initFrame:SetScript("OnEvent", function(self)
         wipe(_eabrClickMappings)
         _eabrClickMappings.display = { section = displaySection, target = row2 }
         _eabrClickMappings.showText = { section = displaySection, target = row2 }
-        _eabrClickMappings.raidbuff = { section = raidBufHdr, target = raidBufFirstRow }
-        _eabrClickMappings.aura = { section = auraHdr, target = auraFirstRow }
+        _eabrClickMappings.raidbuff = { section = raidBufHdr, target = raidBufHdr }
+        _eabrClickMappings.aura = { section = auraHdr, target = auraHdr }
         _eabrClickMappings.consumable = { section = consumHdr, target = consumFirstRow }
 
         -- Per-item mappings: grid cells for individual raid buffs / auras
@@ -1606,10 +1896,8 @@ initFrame:SetScript("OnEvent", function(self)
         if foodRow then _eabrClickMappings["item:food"] = { section = foodRow, target = foodRow } end
         if weaponEnchantRow then _eabrClickMappings["item:weapon_enchant"] = { section = weaponEnchantRow, target = weaponEnchantRow } end
         if runeRow then _eabrClickMappings["item:augment_rune"] = { section = runeRow, target = runeRow } end
-        if healthstoneRow then
-            _eabrClickMappings["item:healthstone"] = { section = healthstoneRow, target = healthstoneRow }
-            _eabrClickMappings["item:inky_black"] = { section = healthstoneRow, target = healthstoneRow }
-        end
+        if healthstoneRow then _eabrClickMappings["item:healthstone"] = { section = healthstoneRow, target = healthstoneRow } end
+        if inkyRow then _eabrClickMappings["item:inky_black"] = { section = inkyRow, target = inkyRow } end
 
         return math.abs(y)
     end
