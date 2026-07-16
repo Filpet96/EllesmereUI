@@ -4417,7 +4417,11 @@ function ns.SetCdStateShiftHidden(fc, shiftHidden)
     shiftHidden = shiftHidden or false
     if (fc._cdStateShiftHidden or false) == shiftHidden then return end
     fc._cdStateShiftHidden = shiftHidden
-    local bk = fc.barKey
+    -- Overflow-diverted frames render on the target bar, so the gap-close
+    -- relayout must hit the bar the frame is actually laid out on. Normally
+    -- unreachable for diverted frames (Phase 3b's no-op rule), but there is
+    -- a one-reanchor window after a shift effect is first configured.
+    local bk = fc._overflowLayoutBar or fc.barKey
     if not bk or ns._cdShiftLayoutPending[bk] then return end
     ns._cdShiftLayoutPending[bk] = true
     C_Timer.After(0, function()
@@ -5436,9 +5440,18 @@ local function RefreshCDMIconAppearance(barKey)
                             ifd._cdStateGlowOn = true
                         end
                     end
-                    -- Event-driven re-evaluation for Resource Aware glows only
-                    -- (inert unless watched).
-                    if glowUsable and ns.CDGlowWatch then ns.CDGlowWatch(icon) end
+                    -- Event-driven re-evaluation: Resource Aware glows always,
+                    -- plus plain glows on EUI custom frames (their SetDesaturation
+                    -- never fires the SetDesaturated hook that would re-evaluate
+                    -- them). Fake-Active-owned frames (PresetHasCdState) excluded.
+                    local watchGlow = glowUsable
+                    if not watchGlow
+                        and (icon._isRacialFrame or icon._isTrinketFrame or icon._isPresetFrame
+                             or icon._isItemPresetFrame or icon._isCustomSpellFrame)
+                        and not (ns.PresetHasCdState and ns.PresetHasCdState(icon)) then
+                        watchGlow = true
+                    end
+                    if watchGlow and ns.CDGlowWatch then ns.CDGlowWatch(icon) end
                 end
             end
         elseif glowOv then
@@ -5520,8 +5533,21 @@ local function RefreshCDMIconAppearance(barKey)
                             end
                         end
                     end
-                    if (cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable")
-                       and glowOv and ns.CDGlowWatch then
+                    -- Resource Aware glows always watch cooldown events. Plain
+                    -- glows normally re-evaluate through the SetDesaturated hook,
+                    -- but EUI's custom frames (racial / trinket / potion / custom)
+                    -- drive desaturation via SetDesaturation(float), which never
+                    -- fires that hook -- without a watch their glow stays lit for
+                    -- the whole cooldown. Frames owned by the Fake-Active preset
+                    -- path (PresetHasCdState) are excluded; that engine glows them.
+                    local watchGlow = cse == "pixelGlowReadyUsable" or cse == "buttonGlowReadyUsable"
+                    if not watchGlow and (cse == "pixelGlowReady" or cse == "buttonGlowReady")
+                        and (icon._isRacialFrame or icon._isTrinketFrame or icon._isPresetFrame
+                             or icon._isItemPresetFrame or icon._isCustomSpellFrame)
+                        and not (ns.PresetHasCdState and ns.PresetHasCdState(icon)) then
+                        watchGlow = true
+                    end
+                    if watchGlow and glowOv and ns.CDGlowWatch then
                         ns.CDGlowWatch(icon)
                     end
                 end
@@ -6838,8 +6864,17 @@ BuildAllCDMBars = function()
     -- Build each bar and populate fast lookup
     local hookActive = ns.IsViewerHooked and ns.IsViewerHooked()
     wipe(barDataByKey)
+    ns._cdmAnyOverflowCfg = nil
     for i, barData in ipairs(p.cdmBars.bars) do
         barDataByKey[barData.key] = barData
+        -- Max Icons overflow: cheap session gate. Validity of the target is
+        -- checked at reanchor time (Phase 3b); this only answers "is it
+        -- worth looking" so the feature is two nil-checks when unused.
+        if not ns._cdmAnyOverflowCfg and barData.enabled
+           and barData.maxIcons and barData.maxIcons > 0
+           and barData.overflowTarget then
+            ns._cdmAnyOverflowCfg = true
+        end
         BuildCDMBar(i)
         local frame = cdmBarFrames[barData.key]
         if frame then frame._prevVisibleCount = nil end
@@ -7258,6 +7293,12 @@ function ns.ReseedAssignedSpellsFromLiveIcons()
                     local fdRS = ns._hookFrameData and ns._hookFrameData[icon]
                     if (fc and fc.isHostedBuff) or icon._isPlaceholderFrame
                        or (fdRS and fdRS._isBuffViewerFrame) then
+                        sid = nil
+                    end
+                    -- Skip overflow-diverted icons: they render on this bar
+                    -- only for the session but belong to their source bar's
+                    -- assignedSpells (mirrors the EnsureAssignedSpells skip).
+                    if sid and fc and fc._overflowLayoutBar then
                         sid = nil
                     end
                     if type(sid) == "number" and sid ~= 0 then
@@ -8425,27 +8466,27 @@ eventFrame:SetScript("OnEvent", function(_, event, unit, updateInfo, arg3)
     end
     if event == "PLAYER_ENTERING_WORLD" then
         _inCombat = InCombatLockdown and InCombatLockdown() or false
-        -- Arena exit backstop: leaving an arena reverts PvP talents and
-        -- spell overrides, and Blizzard re-evaluates the viewer's tracked
-        -- cooldown set. If PLAYER_PVP_TALENT_UPDATE did not fire across the
-        -- zone-out, nothing re-claims the new pool frames and the
-        -- unclaimed-frame cleanup blanks them (arena-exit empty-CDM bug).
-        -- Schedule the same debounced rebuild a talent change gets; the
-        -- token debounce collapses this with the event-driven trigger when
-        -- both fire, so at most one rebuild runs.
+        -- PvP instance transition backstop: entering or leaving a PvP
+        -- instance rebuilds viewer pools (PvP talents activate/deactivate).
+        -- Rebuild + reanchor so the new pool frames are claimed.
         local _, instType = IsInInstance()
-        if ns._cdmWasInArena and instType ~= "arena" then
+        local wasPvP = ns._cdmWasInPvP
+        local isPvP = (instType == "arena" or instType == "pvp")
+        if wasPvP and not isPvP then
             ScheduleTalentRebuild()
         end
-        ns._cdmWasInArena = (instType == "arena") or nil
+        ns._cdmWasInPvP = isPvP or nil
+        if isPvP and not wasPvP then
+            if ns.QueueReanchor then ns.QueueReanchor() end
+        end
         -- Install rotation helper hook after CDM frames have been built
         C_Timer.After(1, function()
             InstallRotationHook()
         end)
-        -- Safety: re-apply visibility after rebuild settles. Blizzard may
-        -- hide/re-show CDM viewers during loading screens (PvP scoreboard,
-        -- barbershop) and the timing race can leave viewer alpha at 0.
+        -- Safety: re-apply visibility after loading screen settles.
+        -- Two passes to catch both fast and late viewer pool rebuilds.
         C_Timer.After(1.5, _CDMApplyVisibility)
+        C_Timer.After(3, _CDMApplyVisibility)
     end
     if event == "SPELLS_CHANGED" then
         CheckSpecChange()
