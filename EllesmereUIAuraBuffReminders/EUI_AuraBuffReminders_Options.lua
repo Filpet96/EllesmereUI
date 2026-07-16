@@ -17,6 +17,7 @@ local SECTION_CONSUMABLES  = "CONSUMABLES"
 local SECTION_ROGUE        = "ROGUE POISONS"
 local SECTION_PALADIN      = "PALADIN RITES"
 local SECTION_SHAMAN       = "SHAMAN IMBUES & SHIELDS"
+local SPECIAL_WHERE_TIP    = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden."
 
 local initFrame = CreateFrame("Frame")
 initFrame:RegisterEvent("PLAYER_LOGIN")
@@ -305,7 +306,7 @@ initFrame:SetScript("OnEvent", function(self)
             btn:Show()
         end
 
-        -- Recalculate total preview height: hardcoded 80px
+        -- Recalculate total preview height (grows with icon size)
         do
             local textYOff2 = d.textYOffset or -2
             local textSz2 = d.textSize or 11
@@ -522,7 +523,7 @@ initFrame:SetScript("OnEvent", function(self)
             return baseR + ((#_previewIcons > 0 and not IsPreviewHintDismissed()) and 35 or 0)
         end
 
-        -- Container for icons (centered within hardcoded 80px header)
+        -- Container for icons (centered within the header, min 80px)
         local textYOff = d and d.textYOffset or -2
         local textSz = d and d.textSize or 11
         local textOverhang = showText and (math.abs(textYOff) + textSz) or 0
@@ -663,8 +664,9 @@ initFrame:SetScript("OnEvent", function(self)
         { key="dungeon_nonmythic", label="Non-Mythic Dungeons" },
         { key="timewalking",       label="Timewalking" },
         { key="delve",             label="Delve" },
-        -- Orthogonal state gate (not a location): unchecking hides this section's
-        -- reminders while in combat. See EABR.SectionShows in the core file.
+        -- Orthogonal state gate (not a location): unchecking hides this section
+        -- while in combat. Keep checked if you want fully-missing reminders
+        -- (flask/food/etc.) to stay visible during combat.
         { key="in_combat",         label="In Combat" },
     }
     local SHOWWHEN_ITEMS = {
@@ -809,103 +811,27 @@ initFrame:SetScript("OnEvent", function(self)
         end
     end
 
-    -- Global + per-section "show below" thresholds (minutes). Display holds the
-    -- defaults; each section can override via useDefaultTiming / useDefaultField.
-    local SHOW_UNDER_TOOLTIP =
-        "Show reminders when remaining buff time is below this many minutes.\n0 = only when fully expired.\nApplies everywhere this section can appear."
-    local SHOW_UNDER_MPLUS_TOOLTIP =
-        "During Mythic+ keystone runs, use this threshold instead of Show Below.\n0 = only when fully expired."
-
+    -- Global Show Below thresholds (Display only — applies to all reminder types).
     local function DefaultTimingRow(parent, y)
         local W = EllesmereUI.Widgets
         local row, h = W:DualRow(parent, y,
-            { type="slider", text="Show Below", min=0, max=60, step=1, trackWidth=120,
-              tooltip=SHOW_UNDER_TOOLTIP,
+            { type="slider", text="Show Below", min=0, max=60, step=1,
+              tooltip="Show reminders when remaining buff time is below this many minutes.\n0 = only when fully expired.\nIgnored in combat and during Mythic+ keys (then only when the buff is gone).",
               getValue=function() local d = DDB(); return d and d.showUnder or 5 end,
               setValue=function(v)
                   local d = DDB(); if not d then return end; d.showUnder = v
-                  RefreshAll(); EllesmereUI:RefreshPage()
+                  RefreshAll()
               end },
-            { type="slider", text="Mythic+: Show Below", min=0, max=60, step=1, trackWidth=120,
-              tooltip=SHOW_UNDER_MPLUS_TOOLTIP,
+            { type="slider", text="Show Below Pre-Key", min=0, max=60, step=1,
+              tooltip="Reminder threshold used while you are in a dungeon before a Mythic+ key starts (Mythic 0 / keystone lobby). Set this high enough that you top up buffs and food before pulling, so you always begin the key with enough duration to last it.\n0 = only when fully expired.\nIgnored once the key is active or you are in combat (then only when the buff is fully gone).",
               getValue=function() local d = DDB(); return d and d.showUnderMPlus or 40 end,
               setValue=function(v)
                   local d = DDB(); if not d then return end; d.showUnderMPlus = v
-                  RefreshAll(); EllesmereUI:RefreshPage()
+                  RefreshAll()
               end }
         )
-        AddMinSuffix(row, "Show Below", "Mythic+: Show Below")
+        AddMinSuffix(row, "Show Below", "Show Below Pre-Key")
         return row, h
-    end
-
-    local function SectionTimingBlock(parent, y, cfg)
-        local W = EllesmereUI.Widgets
-        local store = cfg.store
-        local useDefaultField = cfg.useDefaultField or "useDefaultTiming"
-        local showField = cfg.showField or "showUnder"
-        local mplusField = cfg.mplusField or "showUnderMPlus"
-        local function UsesDefault()
-            local t = store()
-            return not t or t[useDefaultField] ~= false
-        end
-        local function GetGeneral()
-            local t = store()
-            local d = DDB()
-            if t and t[useDefaultField] == false and t[showField] ~= nil then
-                return t[showField]
-            end
-            return d and d.showUnder or 5
-        end
-        local function GetMplus()
-            local t = store()
-            local d = DDB()
-            if t and t[useDefaultField] == false and t[mplusField] ~= nil then
-                return t[mplusField]
-            end
-            return d and d.showUnderMPlus or 40
-        end
-        local _, h = W:DualRow(parent, y,
-            { type="toggle", text="Use Default Timing",
-              tooltip="When on, uses the Display section Show Below values above.\nWhen off, set custom thresholds for this section below.",
-              getValue=function() return UsesDefault() end,
-              setValue=function(v)
-                  local t = store(); if not t then return end
-                  if v then
-                      t[useDefaultField] = true
-                  else
-                      local d = DDB()
-                      if t[showField] == nil then t[showField] = d and d.showUnder or 5 end
-                      if t[mplusField] == nil then t[mplusField] = d and d.showUnderMPlus or 40 end
-                      t[useDefaultField] = false
-                  end
-                  if cfg.onChange then cfg.onChange() end
-                  EllesmereUI:RefreshPage()
-              end }
-        );  y = y - h
-        local row, h2 = W:DualRow(parent, y,
-            { type="slider", text="Show Below", min=0, max=60, step=1, trackWidth=120,
-              tooltip=SHOW_UNDER_TOOLTIP,
-              disabled=UsesDefault,
-              disabledTooltip="Use Default Timing",
-              getValue=GetGeneral,
-              setValue=function(v)
-                  local t = store(); if not t then return end
-                  t[showField] = v
-                  if cfg.onChange then cfg.onChange() end
-              end },
-            { type="slider", text="Mythic+: Show Below", min=0, max=60, step=1, trackWidth=120,
-              tooltip=SHOW_UNDER_MPLUS_TOOLTIP,
-              disabled=UsesDefault,
-              disabledTooltip="Use Default Timing",
-              getValue=GetMplus,
-              setValue=function(v)
-                  local t = store(); if not t then return end
-                  t[mplusField] = v
-                  if cfg.onChange then cfg.onChange() end
-              end }
-        )
-        AddMinSuffix(row, "Show Below", "Mythic+: Show Below")
-        return row, h + h2
     end
 
     ---------------------------------------------------------------------------
@@ -1075,7 +1001,7 @@ initFrame:SetScript("OnEvent", function(self)
             line1:SetTextColor(1, 1, 1, 0.75)
             line1:SetPoint("TOP", infoFrame, "TOP", 0, 0)
             line1:SetJustifyH("CENTER")
-            line1:SetText(EllesmereUI.L("Left Click to apply buffs (out of combat), Middle Click to hide until next load screen"))
+            line1:SetText(EllesmereUI.L("Left Click to apply or ask for buffs (out of combat only), Middle Click to hide until next load screen"))
             y = y - 32
         end
 
@@ -1111,10 +1037,10 @@ initFrame:SetScript("OnEvent", function(self)
         local displaySection
         displaySection, h = W:SectionHeader(parent, SECTION_DISPLAY, y);  y = y - h
 
-        -- Row 1: Show Text (+ inline swatch + cog) | Glow Type (+ inline swatch)
-        local row2
-        row2, h = W:DualRow(parent, y,
-            { type="toggle", text="Show Text",
+        -- Row 1: Show Name (+ swatch + cog) | Show Item Count (+ cog)
+        local rowText
+        rowText, h = W:DualRow(parent, y,
+            { type="toggle", text="Show Name",
               getValue=function() local d = DDB(); return d and d.showText end,
               setValue=function(v)
                   local d = DDB(); if not d then return end; d.showText = v
@@ -1122,6 +1048,140 @@ initFrame:SetScript("OnEvent", function(self)
                   UpdatePreviewHeader()
                   EllesmereUI:RefreshPage()
               end },
+            { type="toggle", text="Show Item Count",
+              tooltip="Show how many of the consumable you have left in your bags.",
+              getValue=function() local d = DDB(); return not d or d.showCount ~= false end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.showCount = v
+                  RefreshAll(); UpdatePreviewHeader()
+              end }
+        );  y = y - h
+
+        -- Inline color swatch + cog on Show Name (left of row 1)
+        do
+            local rgn = rowText._leftRegion
+            local swatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel()+5,
+                function()
+                    local d = DDB()
+                    local tc = d and d.textColor or {r=1, g=1, b=1}
+                    return tc.r, tc.g, tc.b, 1
+                end,
+                function(r, g, b)
+                    local d = DDB(); if not d then return end
+                    d.textColor = {r=r, g=g, b=b}
+                    RefreshAll(); UpdatePreviewHeader()
+                end, false, 20)
+            swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -12, 0)
+            rgn._lastInline = swatch
+
+            -- Disabled overlay for swatch when Show Name is off
+            local swatchBlock = CreateFrame("Frame", nil, swatch)
+            swatchBlock:SetAllPoints()
+            swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
+            swatchBlock:EnableMouse(true)
+            swatchBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Show Name"))
+            end)
+            swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            -- Inline cog for name settings (size, anchor, x/y offset)
+            local _, cogShow = EllesmereUI.BuildCogPopup({
+                title = "Name Settings",
+                rows = {
+                    { type="slider", label="Text Size", min=6, max=30, step=1,
+                      get=function() local d = DDB(); return d and d.textSize or 11 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.textSize = v; RefreshAll(); UpdatePreviewHeader() end },
+                    { type="dropdown", label="Anchor",
+                      values = {
+                          BOTTOM = "Below Icon", TOP = "Above Icon",
+                          CENTER = "On Icon", LEFT = "Left of Icon", RIGHT = "Right of Icon",
+                      },
+                      order = { "BOTTOM", "TOP", "CENTER", "LEFT", "RIGHT" },
+                      get=function() local d = DDB(); return d and d.textAnchor or "BOTTOM" end,
+                      set=function(v) local d = DDB(); if not d then return end; d.textAnchor = v; RefreshAll(); UpdatePreviewHeader() end },
+                    { type="slider", label="X Offset", min=-50, max=50, step=1,
+                      get=function() local d = DDB(); return d and d.textXOffset or 0 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.textXOffset = v; RefreshAll(); UpdatePreviewHeader() end },
+                    { type="slider", label="Y Offset", min=-50, max=50, step=1,
+                      get=function() local d = DDB(); return d and d.textYOffset or -2 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.textYOffset = v; RefreshAll(); UpdatePreviewHeader() end },
+                },
+            })
+            local cogBtn = MakeCogBtn(rgn, cogShow)
+
+            -- Disabled overlay for cog when Show Name is off
+            local cogBlock = CreateFrame("Frame", nil, cogBtn)
+            cogBlock:SetAllPoints()
+            cogBlock:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
+            cogBlock:EnableMouse(true)
+            cogBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip("Show Name"))
+            end)
+            cogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local function UpdateTextInlinesDisabled()
+                local d = DDB()
+                local off = not d or not d.showText
+                if off then
+                    swatch:SetAlpha(0.3)
+                    swatchBlock:Show()
+                    cogBtn:SetAlpha(0.15)
+                    cogBlock:Show()
+                else
+                    swatch:SetAlpha(1)
+                    swatchBlock:Hide()
+                    cogBtn:SetAlpha(0.4)
+                    cogBlock:Hide()
+                end
+            end
+            UpdateTextInlinesDisabled()
+            EllesmereUI.RegisterWidgetRefresh(UpdateTextInlinesDisabled)
+        end
+
+        -- Inline cog on Show Item Count (right of row 1) for size + x/y offset
+        do
+            local rgn = rowText._rightRegion
+            local _, cogShow = EllesmereUI.BuildCogPopup({
+                title = "Item Count Settings",
+                rows = {
+                    { type="slider", label="Text Size", min=6, max=30, step=1,
+                      get=function() local d = DDB(); return d and d.countSize or 16 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.countSize = v; RefreshAll(); UpdatePreviewHeader() end },
+                    { type="slider", label="X Offset", min=-50, max=50, step=1,
+                      get=function() local d = DDB(); return d and d.countXOffset or 0 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.countXOffset = v; RefreshAll(); UpdatePreviewHeader() end },
+                    { type="slider", label="Y Offset", min=-50, max=50, step=1,
+                      get=function() local d = DDB(); return d and d.countYOffset or 0 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.countYOffset = v; RefreshAll(); UpdatePreviewHeader() end },
+                },
+            })
+            local cogBtn = MakeCogBtn(rgn, cogShow)
+
+            local cogBlock = CreateFrame("Frame", nil, cogBtn)
+            cogBlock:SetAllPoints()
+            cogBlock:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
+            cogBlock:EnableMouse(true)
+            cogBlock:SetScript("OnEnter", function()
+                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip("Show Item Count"))
+            end)
+            cogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
+
+            local function UpdateCountCogDisabled()
+                local d = DDB()
+                local off = d and d.showCount == false
+                if off then
+                    cogBtn:SetAlpha(0.15); cogBlock:Show()
+                else
+                    cogBtn:SetAlpha(0.4); cogBlock:Hide()
+                end
+            end
+            UpdateCountCogDisabled()
+            EllesmereUI.RegisterWidgetRefresh(UpdateCountCogDisabled)
+        end
+
+        -- Row 2: Glow Type (+ swatch) | Attach Important Buffs to Cursor
+        local rowGlow
+        rowGlow, h = W:DualRow(parent, y,
             { type="dropdown", text="Glow Type",
               values=_G._EABR_GLOW_VALUES or {[0]="None"},
               order=_G._EABR_GLOW_ORDER or {0},
@@ -1130,12 +1190,16 @@ initFrame:SetScript("OnEvent", function(self)
                   local d = DDB(); if not d then return end; d.glowType = v
                   RefreshAll(); UpdatePreviewHeader()
                   EllesmereUI:RefreshPage()
-              end }
+              end },
+            { type="toggle", text="Attach Important Buffs to Cursor",
+              tooltip="This option only affects Raid Buffs and Paladin Beacons",
+              getValue=function() local d = DDB(); return d and d.cursorAttach end,
+              setValue=function(v) local d = DDB(); if not d then return end; d.cursorAttach = v; RefreshAll() end }
         );  y = y - h
 
-        -- Inline color swatch on Glow Type (right of row 3)
+        -- Inline color swatch on Glow Type (left of row 2)
         do
-            local rgn = row2._rightRegion
+            local rgn = rowGlow._leftRegion
             local swatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel()+5,
                 function()
                     local d = DDB()
@@ -1174,119 +1238,6 @@ initFrame:SetScript("OnEvent", function(self)
             EllesmereUI.RegisterWidgetRefresh(UpdateSwatchDisabled)
         end
 
-        -- Inline color swatch + cog on Show Text (left of row 2)
-        do
-            local rgn = row2._leftRegion
-            local swatch = EllesmereUI.BuildColorSwatch(rgn, rgn:GetFrameLevel()+5,
-                function()
-                    local d = DDB()
-                    local tc = d and d.textColor or {r=1, g=1, b=1}
-                    return tc.r, tc.g, tc.b, 1
-                end,
-                function(r, g, b)
-                    local d = DDB(); if not d then return end
-                    d.textColor = {r=r, g=g, b=b}
-                    RefreshAll(); UpdatePreviewHeader()
-                end, false, 20)
-            swatch:SetPoint("RIGHT", rgn._lastInline or rgn._control, "LEFT", -12, 0)
-            rgn._lastInline = swatch
-
-            -- Disabled overlay for swatch when Show Text is off
-            local swatchBlock = CreateFrame("Frame", nil, swatch)
-            swatchBlock:SetAllPoints()
-            swatchBlock:SetFrameLevel(swatch:GetFrameLevel() + 10)
-            swatchBlock:EnableMouse(true)
-            swatchBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(swatch, EllesmereUI.DisabledTooltip("Show Text"))
-            end)
-            swatchBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Inline cog for text settings (size, x/y offset)
-            local _, cogShow = EllesmereUI.BuildCogPopup({
-                title = "Text Settings",
-                rows = {
-                    { type="slider", label="Text Size", min=6, max=30, step=1,
-                      get=function() local d = DDB(); return d and d.textSize or 11 end,
-                      set=function(v) local d = DDB(); if not d then return end; d.textSize = v; RefreshAll(); UpdatePreviewHeader() end },
-                    { type="dropdown", label="Anchor",
-                      values = {
-                          BOTTOM = "Below Icon", TOP = "Above Icon",
-                          CENTER = "On Icon", LEFT = "Left of Icon", RIGHT = "Right of Icon",
-                      },
-                      order = { "BOTTOM", "TOP", "CENTER", "LEFT", "RIGHT" },
-                      get=function() local d = DDB(); return d and d.textAnchor or "BOTTOM" end,
-                      set=function(v) local d = DDB(); if not d then return end; d.textAnchor = v; RefreshAll(); UpdatePreviewHeader() end },
-                    { type="slider", label="X Offset", min=-50, max=50, step=1,
-                      get=function() local d = DDB(); return d and d.textXOffset or 0 end,
-                      set=function(v) local d = DDB(); if not d then return end; d.textXOffset = v; RefreshAll(); UpdatePreviewHeader() end },
-                    { type="slider", label="Y Offset", min=-50, max=50, step=1,
-                      get=function() local d = DDB(); return d and d.textYOffset or -2 end,
-                      set=function(v) local d = DDB(); if not d then return end; d.textYOffset = v; RefreshAll(); UpdatePreviewHeader() end },
-                },
-            })
-            local cogBtn = MakeCogBtn(rgn, cogShow)
-
-            -- Disabled overlay for cog when Show Text is off
-            local cogBlock = CreateFrame("Frame", nil, cogBtn)
-            cogBlock:SetAllPoints()
-            cogBlock:SetFrameLevel(cogBtn:GetFrameLevel() + 10)
-            cogBlock:EnableMouse(true)
-            cogBlock:SetScript("OnEnter", function()
-                EllesmereUI.ShowWidgetTooltip(cogBtn, EllesmereUI.DisabledTooltip("Show Text"))
-            end)
-            cogBlock:SetScript("OnLeave", function() EllesmereUI.HideWidgetTooltip() end)
-
-            -- Shared refresh for both swatch and cog disabled states
-            local function UpdateTextInlinesDisabled()
-                local d = DDB()
-                local off = not d or not d.showText
-                if off then
-                    swatch:SetAlpha(0.3)
-                    swatchBlock:Show()
-                    cogBtn:SetAlpha(0.15)
-                    cogBlock:Show()
-                else
-                    swatch:SetAlpha(1)
-                    swatchBlock:Hide()
-                    cogBtn:SetAlpha(0.4)
-                    cogBlock:Hide()
-                end
-            end
-            UpdateTextInlinesDisabled()
-            EllesmereUI.RegisterWidgetRefresh(UpdateTextInlinesDisabled)
-        end
-
-        -- Row 4: Icon Spacing (+ directions cog) | Attach Important Buffs to Cursor
-        local row3
-        row3, h = W:DualRow(parent, y,
-            { type="slider", text="Icon Spacing", min=0, max=50, step=1,
-              getValue=function() local d = DDB(); return d and d.iconSpacing or 8 end,
-              setValue=function(v)
-                  local d = DDB(); if not d then return end; d.iconSpacing = v
-                  RefreshAll()
-                  RelayoutPreviewIcons()
-              end },
-            { type="toggle", text="Attach Important Buffs to Cursor",
-              tooltip="This option only affects Raid Buffs and Paladin Beacons",
-              getValue=function() local d = DDB(); return d and d.cursorAttach end,
-              setValue=function(v) local d = DDB(); if not d then return end; d.cursorAttach = v; RefreshAll() end }
-        );  y = y - h
-
-        -- Inline DIRECTIONS cog on Icon Spacing (left of row 3) for Y offset
-        do
-            local rgn = row3._leftRegion
-            local _, cogShow = EllesmereUI.BuildCogPopup({
-                title = "Layout Settings",
-                rows = {
-                    { type="slider", label="Y Offset", min=-600, max=600, step=1,
-                      get=function() local d = DDB(); return d and d.yOffset or 0 end,
-                      set=function(v) local d = DDB(); if not d then return end; d.yOffset = v
-                          if _G._EABR_ApplyUnlockPos then _G._EABR_ApplyUnlockPos() end end },
-                },
-            })
-            MakeCogBtn(rgn, cogShow, nil, EllesmereUI.DIRECTIONS_ICON)
-        end
-
         -- Row 3: Preview Mode | Frame Strata
         _, h = W:DualRow(parent, y,
             { type="dropdown", text="Preview Mode",
@@ -1309,8 +1260,16 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
-        -- Row 4: Opacity (full width)
-        _, h = W:DualRow(parent, y,
+        -- Row 4: Icon Spacing (+ directions cog) | Opacity
+        local rowSliders
+        rowSliders, h = W:DualRow(parent, y,
+            { type="slider", text="Icon Spacing", min=0, max=50, step=1,
+              getValue=function() local d = DDB(); return d and d.iconSpacing or 8 end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.iconSpacing = v
+                  RefreshAll()
+                  RelayoutPreviewIcons()
+              end },
             { type="slider", text="Opacity", min=0, max=1, step=0.05,
               getValue=function() local d = DDB(); return d and d.opacity or 1 end,
               setValue=function(v)
@@ -1319,7 +1278,40 @@ initFrame:SetScript("OnEvent", function(self)
               end }
         );  y = y - h
 
+        -- Inline DIRECTIONS cog on Icon Spacing (left of row 4) for Y offset
+        do
+            local rgn = rowSliders._leftRegion
+            local _, cogShow = EllesmereUI.BuildCogPopup({
+                title = "Layout Settings",
+                rows = {
+                    { type="slider", label="Y Offset", min=-600, max=600, step=1,
+                      get=function() local d = DDB(); return d and d.yOffset or 0 end,
+                      set=function(v) local d = DDB(); if not d then return end; d.yOffset = v
+                          if _G._EABR_ApplyUnlockPos then _G._EABR_ApplyUnlockPos() end end },
+                },
+            })
+            MakeCogBtn(rgn, cogShow, nil, EllesmereUI.DIRECTIONS_ICON)
+        end
+
+        -- Show Below defaults (paired DualRow, same track size as Icon Spacing)
         _, h = DefaultTimingRow(parent, y);  y = y - h
+
+        -- Row 6: Show Tooltips | Request Missing Buffs in Chat
+        _, h = W:DualRow(parent, y,
+            { type="toggle", text="Show Tooltips",
+              tooltip="Show item or spell tooltips when hovering reminder icons.",
+              getValue=function() local d = DDB(); return not d or d.showTooltips ~= false end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.showTooltips = v
+              end },
+            { type="toggle", text="Request Missing Buffs in Chat",
+              tooltip="Left-click a reminder for a buff you are missing from others to ask for it in party/raid/instance chat.\nOnly applies to reminders from \"I am missing others' buffs\" (and Healthstone when a Warlock is present).\nOut of combat only. 5 second cooldown between requests.",
+              getValue=function() local d = DDB(); return not d or d.requestBuffInChat ~= false end,
+              setValue=function(v)
+                  local d = DDB(); if not d then return end; d.requestBuffInChat = v
+                  RefreshAll()
+              end }
+        );  y = y - h
 
         _, h = W:Spacer(parent, y, 20);  y = y - h
 
@@ -1339,7 +1331,6 @@ initFrame:SetScript("OnEvent", function(self)
             onChange = RefreshAll,
             onShowWhenChange = function() if _G._EABR_UpdateGroupAuraRegistration then _G._EABR_UpdateGroupAuraRegistration() end end,
         });  y = y - h
-        _, h = SectionTimingBlock(parent, y, { store = RDB, onChange = RefreshAll });  y = y - h
 
         -- 4-column checkbox grid: enable/disable each raid buff.
         do
@@ -1374,7 +1365,6 @@ initFrame:SetScript("OnEvent", function(self)
             soundSec = ADB, soundField = "sectionSound",
             onChange = RefreshAll,
         });  y = y - h
-        _, h = SectionTimingBlock(parent, y, { store = ADB, onChange = RefreshAll });  y = y - h
 
         -- 4-column checkbox grid: enable/disable each aura.
         do
@@ -1399,19 +1389,11 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  ROGUE POISONS sub-section
         -----------------------------------------------------------------------
-        local rogueHdr
-        rogueHdr, h = W:SectionHeader(parent, SECTION_ROGUE, y);  y = y - h
+        _, h = W:SectionHeader(parent, SECTION_ROGUE, y);  y = y - h
         _, h = SectionControlRow(parent, y, {
             whereStore = CSpecialWhere,
-            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            whereTooltip = SPECIAL_WHERE_TIP,
             soundSec = CDB, soundField = "specialsSound",
-            onChange = RefreshAll,
-        });  y = y - h
-        _, h = SectionTimingBlock(parent, y, {
-            store = CDB,
-            useDefaultField = "specialsUseDefaultTiming",
-            showField = "specialsShowUnder",
-            mplusField = "specialsShowUnderMPlus",
             onChange = RefreshAll,
         });  y = y - h
 
@@ -1436,11 +1418,10 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  PALADIN RITES sub-section
         -----------------------------------------------------------------------
-        local paladinHdr
-        paladinHdr, h = W:SectionHeader(parent, SECTION_PALADIN, y);  y = y - h
+        _, h = W:SectionHeader(parent, SECTION_PALADIN, y);  y = y - h
         _, h = SectionControlRow(parent, y, {
             whereStore = CSpecialWhere,
-            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            whereTooltip = SPECIAL_WHERE_TIP,
             soundSec = CDB, soundField = "specialsSound",
             onChange = RefreshAll,
         });  y = y - h
@@ -1466,11 +1447,10 @@ initFrame:SetScript("OnEvent", function(self)
         -----------------------------------------------------------------------
         --  SHAMAN IMBUES & SHIELDS sub-section
         -----------------------------------------------------------------------
-        local shamanHdr
-        shamanHdr, h = W:SectionHeader(parent, SECTION_SHAMAN, y);  y = y - h
+        _, h = W:SectionHeader(parent, SECTION_SHAMAN, y);  y = y - h
         _, h = SectionControlRow(parent, y, {
             whereStore = CSpecialWhere,
-            whereTooltip = "Pick which content the class-special reminders (poisons/rites/imbues/shields) appear in.\nRested areas (cities and inns) always stay hidden.",
+            whereTooltip = SPECIAL_WHERE_TIP,
             soundSec = CDB, soundField = "specialsSound",
             onChange = RefreshAll,
         });  y = y - h
@@ -1543,7 +1523,6 @@ initFrame:SetScript("OnEvent", function(self)
             soundSec = CDB, soundField = "sectionSound",
             onChange = RefreshAll,
         });  y = y - h
-        _, h = SectionTimingBlock(parent, y, { store = CDB, onChange = RefreshAll });  y = y - h
 
         -- Show Without Item in Bags | Ready Check Mana Warning
         row, h = W:DualRow(parent, y,
@@ -1877,12 +1856,12 @@ initFrame:SetScript("OnEvent", function(self)
         end
 
         -- Wire up click mappings for preview hit overlays. Both display-level
-        -- targets are row2 -- the first DISPLAY row, which also hosts the Show
-        -- Text toggle. (These previously pointed at names that were never
+        -- targets are rowText -- the first DISPLAY row, which also hosts the Show
+        -- Name toggle. (These previously pointed at names that were never
         -- assigned, so the nil-target guard silently swallowed the clicks.)
         wipe(_eabrClickMappings)
-        _eabrClickMappings.display = { section = displaySection, target = row2 }
-        _eabrClickMappings.showText = { section = displaySection, target = row2 }
+        _eabrClickMappings.display = { section = displaySection, target = rowText }
+        _eabrClickMappings.showText = { section = displaySection, target = rowText }
         _eabrClickMappings.raidbuff = { section = raidBufHdr, target = raidBufHdr }
         _eabrClickMappings.aura = { section = auraHdr, target = auraHdr }
         _eabrClickMappings.consumable = { section = consumHdr, target = consumFirstRow }
@@ -3079,3 +3058,4 @@ initFrame:SetScript("OnEvent", function(self)
         EllesmereUI:ShowModule("EllesmereUIAuraBuffReminders")
     end
 end)
+

@@ -240,9 +240,19 @@ local function InMythicPlusKey()
     return C_ChallengeMode and C_ChallengeMode.IsChallengeModeActive and C_ChallengeMode.IsChallengeModeActive()
 end
 
-local function InMythicZeroDungeon()
-    if _cachedIType == "party" and (_cachedDiffID == 23 or _cachedDiffID == 8) then return true end
-    return false
+-- Mythic 0 dungeon (difficulty 23). Keyed M+ (active challenge) is not M0.
+-- Hung on EABR (Lua 5.1 200-local chunk cap).
+function EABR.InMythicZeroDungeon()
+    if InMythicPlusKey() then return false end
+    return _cachedIType == "party" and _cachedDiffID == 23
+end
+
+-- Thresholds apply everywhere except combat and active Mythic+ keys (then
+-- reminders only when the buff is fully gone). Hung on EABR (200-local cap).
+function EABR.ShowUnderThresholdApplies()
+    if EABR._previewForce then return true end
+    if InCombat() or InMythicPlusKey() then return false end
+    return true
 end
 
 -- Mythic raid difficulty: fixed 20-player (16, PrimaryRaidMythic) or
@@ -252,9 +262,9 @@ local function IsMythicRaidDiff(d)
     return d == 16 or d == 233
 end
 
--- Mythic 0 dungeon (party, normal difficulty 1) or Mythic raid (fixed or flex)
+-- Mythic 0 dungeon or Mythic raid (fixed or flex)
 local function InMythicZeroDungeonOrMythicRaid()
-    if InMythicZeroDungeon() then return true end
+    if EABR.InMythicZeroDungeon() then return true end
     if IsInRaid() and IsMythicRaidDiff(_cachedDiffID) then return true end
     return false
 end
@@ -337,6 +347,7 @@ local NON_SECRET_SPELL_IDS = {
 --  Pre-combat aura snapshot
 -------------------------------------------------------------------------------
 local _preCombatAuraCache = {}  -- [spellID] = true/false, snapshotted at REGEN_DISABLED
+local _preCombatWellFed = false -- Well Fed icon is secret in combat; snapshot presence OOC
 
 local function _isRuntimeNonSecret(id)
     if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
@@ -357,12 +368,17 @@ local function SnapshotPlayerAuras()
     -- even out of combat); the whitelisted lookups above still work and the
     -- extras are simply skipped there.
     if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return end
+    _preCombatWellFed = false
     for i = 1, AURA_SCAN_LIMIT do
         local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
         if not aura then break end
         local sid = aura.spellId
         if sid and not isSecret(sid) and not NON_SECRET_SPELL_IDS[sid] then
             _preCombatAuraCache[sid] = true
+        end
+        local ic = aura.icon
+        if ic and not isSecret(ic) and ic == 136000 then
+            _preCombatWellFed = true
         end
     end
 end
@@ -830,6 +846,36 @@ local RAID_BUFFS = {
     -- { key="hmark",  class="HUNTER",  name="Hunter's Mark",          castSpell=257284, buffIDs={257284},  check="huntersMark" },
 }
 
+-- Chat asks when clicking a reminder for a buff you can't cast (receiver view).
+-- Hung on EABR (Lua 5.1 200-local chunk cap).
+function EABR.ChatRequestEnabled()
+    local d = db and db.profile and db.profile.display
+    return not d or d.requestBuffInChat ~= false
+end
+
+function EABR.BuildChatRequestMacro(key, fallbackName)
+    local prefix
+    if IsInGroup(2) then -- instance group (LE_PARTY_CATEGORY_INSTANCE)
+        prefix = "/instance "
+    elseif IsInRaid() then
+        prefix = "/raid "
+    elseif IsInGroup() then
+        prefix = "/party "
+    else
+        prefix = "/say "
+    end
+    local msg
+    if key == "motw" then msg = EllesmereUI.L("Mark of the Wild buff pls")
+    elseif key == "bshout" then msg = EllesmereUI.L("Battle Shout buff pls")
+    elseif key == "fort" then msg = EllesmereUI.L("Power Word: Fortitude buff pls")
+    elseif key == "ai" then msg = EllesmereUI.L("Arcane Intellect buff pls")
+    elseif key == "bronze" then msg = EllesmereUI.L("Blessing of the Bronze buff pls")
+    elseif key == "sky" then msg = EllesmereUI.L("Skyfury buff pls")
+    elseif key == "healthstone" then msg = EllesmereUI.L("Healthstones pls")
+    else msg = fallbackName or EllesmereUI.L("buff pls") end
+    return prefix .. msg
+end
+
 -------------------------------------------------------------------------------
 --  SPELL DATA Auras (some non-secret, some still OOC-only)
 -------------------------------------------------------------------------------
@@ -1154,16 +1200,29 @@ end
 
 local function PlayerHasWellFed()
     if EABR._previewForce then return false end
-    if InCombat() then return true end  -- never show food reminder in combat
-    if InMythicPlusKey() then return true end  -- can't act on it during M+, suppress
-    if InPvPInstance() then return true end  -- food not trackable in PvP, suppress
-    -- 12.1: any other restricted content (raid instances OOC) -- suppress.
-    if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return true end
+    -- The Well Fed aura has no whitelisted spell ID, so it is detected by icon
+    -- (136000) via an index scan. In restricted content the icon is secret and
+    -- unreadable, so it cannot be verified: assume fed rather than nag for the
+    -- whole instance (matches PlayerHasBuffByName and BuffReminders' policy).
+    -- The AurasRestricted() error-probe misses M+ (the scan can succeed with
+    -- secret fields there), so also gate on the M+/PvP content checks.
+    if (EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted())
+        or InMythicPlusKey() or InPvPInstance() then
+        return true
+    end
+    -- Open-world combat: the icon is secret but the pre-combat snapshot is
+    -- reliable there (REGEN_DISABLED scanned it unrestricted).
+    if InCombat() then
+        return _preCombatWellFed
+    end
+    -- OOC: live scan by icon; keep the snapshot fresh for the next combat.
+    _preCombatWellFed = false
     for i = 1, AURA_SCAN_LIMIT do
-        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
-        if not aura then break end
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        if not ok or not aura then break end
         local ic = aura.icon
-        if ic and not isSecret(ic) and ic == 136000 then 
+        if ic and not isSecret(ic) and ic == 136000 then
+            _preCombatWellFed = true
             if IsUnderDuration(aura.duration, aura.expirationTime, "consumable") then
                 return false
             end
@@ -1187,10 +1246,8 @@ function EABR.ScanEatingState()
     local i = 1
     local auraData = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
     while auraData do
-        local ok, match = pcall(function()
-            return auraData.icon == EATING_AURA_ICON
-        end)
-        if ok and match then
+        local ic = auraData.icon
+        if ic and not isSecret(ic) and ic == EATING_AURA_ICON then
             _eatingAuraInstanceID = auraData.auraInstanceID
             return
         end
@@ -1203,10 +1260,8 @@ function EABR.UpdateEatingState(updateInfo)
     if not updateInfo then return end
     if updateInfo.addedAuras then
         for _, aura in ipairs(updateInfo.addedAuras) do
-            local ok, match = pcall(function()
-                return aura.icon == EATING_AURA_ICON
-            end)
-            if ok and match then
+            local ic = aura.icon
+            if ic and not isSecret(ic) and ic == EATING_AURA_ICON then
                 _eatingAuraInstanceID = aura.auraInstanceID
                 break
             end
@@ -1241,40 +1296,48 @@ end
 
 local function PlayerHasFlaskBuff()
     if EABR._previewForce then return false end
-    -- Aura API is restricted in PvP and M+ keystones; suppress since player can't act on it.
-    if InPvPInstance() then return true end
-    if InMythicPlusKey() then return true end
-    -- 12.1: any other restricted content -- the name fallback below cannot
-    -- populate there, so suppress instead of false-reminding.
-    if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return true end
-    -- Direct ID lookup for known flask buff IDs (zero allocation)
+    -- Direct ID lookup for known flask buff IDs (works OOC and often in combat).
     for id in pairs(FLASK_BUFF_ID_SET) do
         local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
-        if ok and result ~= nil then 
-            if IsUnderDuration(result.duration, result.expirationTime, "consumable") then
+        if ok and result ~= nil then
+            local dur, exp = result.duration, result.expirationTime
+            if dur ~= nil and exp ~= nil and not isSecret(dur) and not isSecret(exp)
+               and IsUnderDuration(dur, exp, "consumable") then
                 return false
             end
             return true
         end
     end
-    -- Name-based fallback for flasks not in our ID set (lazy scan)
+    -- Name-based fallback when the OOC aura name cache is available.
     if _AC.valid then
         _AC.ensureNames()
         for aName in pairs(_AC.byName) do
             if FLASK_NAME_SET[aName] then return true end
         end
     end
+    -- Restricted content (M+/raid/PvP): the flask buff is not whitelisted, so
+    -- the lookups above return silent absence and the name scan is impossible.
+    -- We cannot confirm it is missing, so assume present rather than nag through
+    -- a whole key (matches PlayerHasBuffByName and BuffReminders' policy). The
+    -- AurasRestricted() error-probe misses M+, so also gate on M+/PvP content.
+    if (EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted())
+        or InMythicPlusKey() or InPvPInstance() then
+        return true
+    end
+    -- Open-world combat: flask IDs aren't reliably readable during lockdown, so use
+    -- the pre-combat snapshot (captured unrestricted at REGEN_DISABLED), like food.
+    if InCombat() then
+        for id in pairs(FLASK_BUFF_ID_SET) do
+            if _preCombatAuraCache[id] then return true end
+        end
+    end
     return false
 end
 
 local function PlayerHasInkyBlackness()
-    -- Aura API is restricted in PvP and M+ keystones; suppress since the buff
-    -- can't be read there and the player can't act on it mid-key (mirrors flask/food).
-    if InPvPInstance() then return true end
-    if InMythicPlusKey() then return true end
-    if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return true end
     for i = 1, AURA_SCAN_LIMIT do
-        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        if not ok then return false end
         if not aura then break end
         local sid = aura.spellId
         local ic = aura.icon
@@ -1370,19 +1433,35 @@ local function FindFlaskItem(preferredKey, lastUsedItemID)
 end
 
 local function FindFoodItem(preferredKey, lastUsedItemID)
-    if preferredKey == "last_used" then
-        if lastUsedItemID and CachedGetItemCount(lastUsedItemID) > 0 then
-            return lastUsedItemID
-        end
+    if preferredKey ~= "last_used" then
         for _, f in ipairs(FOOD_ITEMS) do
-            if CachedGetItemCount(f.itemID) > 0 then return f.itemID end
+            if f.key == preferredKey and CachedGetItemCount(f.itemID) > 0 then return f.itemID end
         end
-        return nil
+        -- Preferred food not in bags: try the base variant of the same food
+        -- (e.g. "hearty_royal_roast" -> "royal_roast") before giving up on it.
+        local baseKey = preferredKey:gsub("^hearty_", "")
+        if baseKey ~= preferredKey then
+            for _, f in ipairs(FOOD_ITEMS) do
+                if f.key == baseKey and CachedGetItemCount(f.itemID) > 0 then return f.itemID end
+            end
+        end
+    elseif lastUsedItemID and CachedGetItemCount(lastUsedItemID) > 0 then
+        return lastUsedItemID
     end
+    -- Fall back to the highest-quality food still in bags so the reminder stays
+    -- clickable when the preferred/last food is gone but something edible remains.
+    local bestID, bestQ = nil, -1
     for _, f in ipairs(FOOD_ITEMS) do
-        if f.key == preferredKey and CachedGetItemCount(f.itemID) > 0 then return f.itemID end
+        if CachedGetItemCount(f.itemID) > 0 then
+            local q = 0
+            if C_TradeSkillUI and C_TradeSkillUI.GetItemCraftedQualityByItemInfo then
+                local ok, tier = pcall(C_TradeSkillUI.GetItemCraftedQualityByItemInfo, f.itemID)
+                if ok and tier then q = tier end
+            end
+            if q > bestQ then bestID = f.itemID; bestQ = q end
+        end
     end
-    return nil
+    return bestID
 end
 
 local function FindWeaponEnchantItem(preferredKey, lastUsedItemID, targetCat)
@@ -1470,7 +1549,7 @@ function EABR.ResolveConsumables()
     end
     R.flask.itemID = flaskItemID
 
-    -- Food: resolve a display item even when out of stock (never desaturated).
+    -- Food: resolve a display item even when out of stock (shown desaturated).
     local foodItemID = FindFoodItem(pfd, lufd)
     R.food.hasBags = (foodItemID ~= nil)
     if not foodItemID then
@@ -1486,6 +1565,20 @@ function EABR.ResolveConsumables()
         end
     end
     R.food.itemID = foodItemID
+    -- Amber-count flag when the shown food is a backup because the preferred/last
+    -- pick ran out (but you still own some other food).
+    R.food.isSubstitute = false
+    if foodItemID and R.food.hasBags then
+        local foodKey
+        for _, f in ipairs(FOOD_ITEMS) do
+            if f.itemID == foodItemID then foodKey = f.key; break end
+        end
+        if pfd ~= "last_used" then
+            R.food.isSubstitute = (foodKey ~= pfd)
+        elseif lufd and foodItemID ~= lufd then
+            R.food.isSubstitute = true
+        end
+    end
 
     -- Weapon enchant: per slot. cat (equipped weapon type) gates the reminder in
     -- CollectConsumables and selects the item; resolve a display item even when
@@ -1587,16 +1680,22 @@ local defaults = {
             xOffset = 0,
             yOffset = 200,
             showText = true,
+            showTooltips = true,
             textColor = {r=1, g=1, b=1},
             textSize = 12,
             textFont = "Expressway",
             textXOffset = 0,
             textYOffset = -5,
             textAnchor = "BOTTOM",
+            showCount = true,
+            countSize = 16,
+            countXOffset = 0,
+            countYOffset = 0,
             iconSpacing = 14,
             opacity = 1.0,
             frameStrata = "MEDIUM",
             cursorAttach = false,
+            requestBuffInChat = true,
             showUnder = 5,
             showUnderMPlus = 40,
             -- Where/when reminders appear (open world, Mythic+, raids, combat, ...)
@@ -1716,6 +1815,80 @@ function EABR.AttachIconHover(f)
     f._eabrHoverAttached = true
 end
 
+function EABR.ApplyIconTooltipData(f, m)
+    if not f then return end
+    if not m then
+        f._tooltipItem = nil
+        f._tooltipSpell = nil
+        f._tooltipLabel = nil
+        return
+    end
+    f._tooltipItem = m.tooltipItem or m.itemID or nil
+    f._tooltipSpell = m.spellID or (m.data and m.data.castSpell) or nil
+    f._tooltipLabel = m.label or nil
+end
+
+function EABR.ShowIconTooltip(f)
+    local d = db and db.profile and db.profile.display
+    if not d or d.showTooltips == false then return end
+    if not f then return end
+    GameTooltip:SetOwner(f, "ANCHOR_RIGHT")
+    local shown = false
+    if f._tooltipItem then
+        GameTooltip:SetItemByID(f._tooltipItem)
+        shown = true
+    elseif f._tooltipSpell then
+        GameTooltip:SetSpellByID(f._tooltipSpell)
+        shown = true
+    elseif f._tooltipLabel and f._tooltipLabel ~= "" then
+        GameTooltip:SetText(tostring(f._tooltipLabel))
+        shown = true
+    end
+    if shown then
+        if f._outOfStock then
+            GameTooltip:AddLine(EllesmereUI.L("You don't have this item in your bags"), 1, 0.3, 0.3, true)
+        elseif f._substitute then
+            GameTooltip:AddLine(EllesmereUI.L("Your preferred food is out - using a backup you own"), 1, 0.82, 0, true)
+        end
+        GameTooltip:Show()
+    end
+end
+
+function EABR.HideIconTooltip()
+    GameTooltip:Hide()
+end
+
+function EABR.AttachIconTooltip(f)
+    if f._eabrTooltipAttached then return end
+    f:EnableMouse(true)
+    f:HookScript("OnEnter", function(self) EABR.ShowIconTooltip(self) end)
+    f:HookScript("OnLeave", function() EABR.HideIconTooltip() end)
+    f._eabrTooltipAttached = true
+end
+
+-- Visual-only combat/cursor icons: tell the player why left-click does nothing.
+local _combatClickHintAt = 0
+function EABR.NotifyCombatClickDisabled()
+    local now = GetTime()
+    if now - _combatClickHintAt < 2.5 then return end
+    _combatClickHintAt = now
+    local msg = EllesmereUI.L("Click-to-use is disabled in combat")
+    if UIErrorsFrame then
+        UIErrorsFrame:AddMessage(msg, 1.0, 0.3, 0.3, 1.0)
+    end
+end
+
+function EABR.AttachCombatClickHint(f)
+    if f._eabrCombatClickHint then return end
+    f:EnableMouse(true)
+    f:HookScript("OnMouseUp", function(_, button)
+        if button == "LeftButton" then
+            EABR.NotifyCombatClickDisabled()
+        end
+    end)
+    f._eabrCombatClickHint = true
+end
+
 function EABR.CreateIconCountOverlay(f)
     if f._count then return f._count end
     local count = f:CreateFontString(nil, "OVERLAY", "NumberFontNormalLarge")
@@ -1723,6 +1896,117 @@ function EABR.CreateIconCountOverlay(f)
     count:Hide()
     f._count = count
     return count
+end
+
+-- Crafted-quality badge (Professions Tier 1/2/3) for a consumable item, or nil.
+EABR._qualityAtlasCache = EABR._qualityAtlasCache or {}
+function EABR.GetItemQualityAtlas(itemID)
+    if not itemID then return nil end
+    local cached = EABR._qualityAtlasCache[itemID]
+    if cached then return cached end -- crafted quality is immutable; only positive hits are cached
+    local atlas
+    if C_TradeSkillUI and C_TradeSkillUI.GetItemCraftedQualityByItemInfo then
+        local ok, q = pcall(C_TradeSkillUI.GetItemCraftedQualityByItemInfo, itemID)
+        if ok and q and q > 0 then
+            atlas = "Professions-Icon-Quality-Tier" .. q
+        end
+    end
+    if not atlas then
+        local link = select(2, C_Item.GetItemInfo(itemID))
+        if link then
+            local suffix = link:match("Quality%-[%w%-]*Tier%d")
+            if suffix then atlas = "Professions-Icon-" .. suffix end
+        end
+    end
+    if atlas then EABR._qualityAtlasCache[itemID] = atlas end
+    return atlas
+end
+
+function EABR.CreateIconQualityOverlay(f)
+    if f._quality then return f._quality end
+    local q = f:CreateTexture(nil, "OVERLAY", nil, 7)
+    q:Hide()
+    f._quality = q
+    return q
+end
+
+-- Position/size the quality badge relative to the current icon size.
+function EABR.SizeIconQuality(f, sz)
+    local q = f._quality
+    if not q or not f._qualityAtlas then return end
+    local qs = max(10, floor(sz * 0.42))
+    local off = floor(sz * 0.10)
+    q:SetSize(qs, qs)
+    q:ClearAllPoints()
+    q:SetPoint("BOTTOMLEFT", f, "BOTTOMLEFT", -off, -off)
+end
+
+function EABR.ApplyIconQuality(f, atlas)
+    if not f then return end
+    EABR.CreateIconQualityOverlay(f)
+    f._qualityAtlas = atlas or nil
+    local q = f._quality
+    if atlas then
+        q:SetAtlas(atlas)
+        EABR.SizeIconQuality(f, f:GetWidth() or ICON_SIZE)
+        q:Show()
+    else
+        q:Hide()
+    end
+end
+
+-- Bag-count badge (how many of the consumable remain), bottom-right corner.
+function EABR.CreateIconBagCountOverlay(f)
+    if f._bagCount then return f._bagCount end
+    local fs = f:CreateFontString(nil, "OVERLAY")
+    SetABRFont(fs, ResolveFontPath(), 11)
+    fs:Hide()
+    f._bagCount = fs
+    return fs
+end
+
+function EABR.SizeIconBagCount(f, sz)
+    local fs = f._bagCount
+    if not fs or not f._bagCountShown then return end
+    local p = db and db.profile.display
+    local base = (p and p.countSize) or 16
+    local fsz = max(6, floor(base * (sz / ICON_SIZE) + 0.5))
+    SetABRFont(fs, ResolveFontPath(p and p.textFont), fsz)
+    local dx = (p and p.countXOffset) or 0
+    local dy = (p and p.countYOffset) or 0
+    fs:ClearAllPoints()
+    fs:SetPoint("BOTTOMRIGHT", f, "BOTTOMRIGHT", dx, dy)
+end
+
+function EABR.ApplyIconBagCount(f, count, outOfStock, substitute)
+    if not f then return end
+    EABR.CreateIconBagCountOverlay(f)
+    f._outOfStock = outOfStock and true or nil
+    f._substitute = (substitute and not outOfStock) and true or nil
+    local fs = f._bagCount
+    local p = db and db.profile.display
+    local showCount = not p or p.showCount ~= false
+    if showCount and outOfStock then
+        f._bagCountShown = true
+        fs:SetText("0")
+        fs:SetTextColor(1, 0.2, 0.2, 1)
+        EABR.SizeIconBagCount(f, f:GetWidth() or ICON_SIZE)
+        fs:Show()
+    elseif showCount and count and count > 0 then
+        f._bagCountShown = true
+        fs:SetText(count)
+        if substitute then
+            fs:SetTextColor(1, 0.82, 0, 1)
+        else
+            fs:SetTextColor(1, 1, 1, 1)
+        end
+        EABR.SizeIconBagCount(f, f:GetWidth() or ICON_SIZE)
+        fs:Show()
+    else
+        f._bagCountShown = nil
+        fs:SetText("")
+        fs:Hide()
+    end
 end
 
 -------------------------------------------------------------------------------
@@ -1758,7 +2042,11 @@ local function GetOrCreateCombatIcon(index)
     text:SetTextColor(1, 1, 1, 1)
     f._text = text
     EABR.CreateIconCountOverlay(f)
+    EABR.CreateIconQualityOverlay(f)
+    EABR.CreateIconBagCountOverlay(f)
     EABR.AttachIconHover(f)
+    EABR.AttachIconTooltip(f)
+    EABR.AttachCombatClickHint(f)
     combatIconPool[index] = f
     return f
 end
@@ -1800,6 +2088,9 @@ local function ShowCombatIcon(iconIdx, m)
         f._text:Hide()
     end
     EABR.ApplyEatingVisual(f, m)
+    EABR.ApplyIconTooltipData(f, m)
+    EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
+    EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
     f:Show()
     combatActiveIcons[#combatActiveIcons+1] = f
 end
@@ -1815,6 +2106,8 @@ local function LayoutCombatIcons()
     for i, f in ipairs(combatActiveIcons) do
         f:SetSize(sz, sz)
         f:SetAlpha(p.opacity or 1.0)
+        EABR.SizeIconQuality(f, sz)
+        EABR.SizeIconBagCount(f, sz)
         f:ClearAllPoints()
         f:SetPoint("CENTER", combatAnchor, "CENTER", startX + (i-1)*(sz+spacing), 0)
     end
@@ -1842,7 +2135,11 @@ local function GetOrCreateCursorIcon(index)
     text:SetTextColor(1, 1, 1, 1)
     f._text = text
     EABR.CreateIconCountOverlay(f)
+    EABR.CreateIconQualityOverlay(f)
+    EABR.CreateIconBagCountOverlay(f)
     EABR.AttachIconHover(f)
+    EABR.AttachIconTooltip(f)
+    EABR.AttachCombatClickHint(f)
     cursorIconPool[index] = f
     return f
 end
@@ -1884,6 +2181,9 @@ local function ShowCursorIcon(iconIdx, m)
         f._text:Hide()
     end
     EABR.ApplyEatingVisual(f, m)
+    EABR.ApplyIconTooltipData(f, m)
+    EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
+    EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
     f:Show()
     cursorActiveIcons[#cursorActiveIcons+1] = f
 end
@@ -1899,6 +2199,8 @@ local function LayoutCursorIcons()
     for i, f in ipairs(cursorActiveIcons) do
         f:SetSize(sz, sz)
         f:SetAlpha(p.opacity or 1.0)
+        EABR.SizeIconQuality(f, sz)
+        EABR.SizeIconBagCount(f, sz)
         f:ClearAllPoints()
         f:SetPoint("CENTER", cursorAnchor, "CENTER", startX + (i-1)*(sz+spacing), 0)
     end
@@ -1953,6 +2255,29 @@ function EABR.ClearEatingVisual(f)
     f._eabrEatingIcon = nil
 end
 
+-- Shared eating-countdown OnUpdate (throttled ~5/sec, text only rewritten on
+-- change) so no closure/string is allocated per frame while eating.
+function EABR.EatingTick(self, elapsed)
+    self._eatingAccum = (self._eatingAccum or 0) + elapsed
+    if self._eatingAccum < 0.2 then return end
+    self._eatingAccum = 0
+    local rem = (self._eatingExp or 0) - GetTime()
+    if rem > 0 then
+        local txt = FormatEatingTime(rem)
+        if txt ~= self._eatingText then
+            self._eatingText = txt
+            self._count:SetText(txt)
+        end
+        self._count:Show()
+        if self._text then self._text:Hide() end
+    else
+        self._count:Hide()
+        self:SetScript("OnUpdate", nil)
+        self._eabrEatingOnUpdate = nil
+        if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+    end
+end
+
 function EABR.ApplyEatingVisual(f, m)
     EABR.ClearEatingVisual(f)
     if not (m and m.isEating) then return end
@@ -1968,27 +2293,17 @@ function EABR.ApplyEatingVisual(f, m)
     local textSize = max(14, floor(((p and p.textSize) or 11) * 1.15))
     SetABRFont(f._count, fontPath, textSize)
     f._count:SetTextColor(1, 1, 1, 1)
-    local function tick()
-        local rem = expTime - GetTime()
-        if rem > 0 then
-            f._count:SetText(FormatEatingTime(rem))
-            f._count:Show()
-            if f._text then f._text:Hide() end
-        else
-            f._count:Hide()
-            f:SetScript("OnUpdate", nil)
-            f._eabrEatingOnUpdate = nil
-            if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
-        end
-    end
-    tick()
+    f._eatingExp = expTime
+    f._eatingText = nil
+    f._eatingAccum = 1 -- force an immediate paint on the first tick
+    EABR.EatingTick(f, 0)
     f._eabrEatingOnUpdate = true
-    f:SetScript("OnUpdate", tick)
+    f:SetScript("OnUpdate", EABR.EatingTick)
 end
 
 local function GetOrCreateIcon(index)
     if iconPool[index] then return iconPool[index] end
-    -- SecureActionButtonTemplate for click-to-cast in combat
+    -- SecureActionButtonTemplate for out-of-combat click-to-cast
     local btn = CreateFrame("Button", "EABR_Icon"..index, iconAnchor, "SecureActionButtonTemplate")
     btn:SetSize(ICON_SIZE, ICON_SIZE)
     btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp", "MiddleButtonUp")
@@ -1996,11 +2311,22 @@ local function GetOrCreateIcon(index)
     btn:SetFrameStrata(GetStrata())
     btn:Hide()
 
-    -- Middle-click dismiss: hide this reminder until the next loading screen
+    -- Middle-click dismiss; LeftButtonUp chat-request anti-spam cooldown.
     btn:HookScript("PostClick", function(self, button)
         if button == "MiddleButton" and self._dismissKey then
             _dismissedUntilLoad[self._dismissKey] = true
             if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+            return
+        end
+        if button == "LeftButton" and self._isChatRequest and EABR.ChatRequestEnabled() then
+            if self._chatRequestCdUntil and self._chatRequestCdUntil > GetTime() then return end
+            self._chatRequestCdUntil = GetTime() + 5
+            self:EnableMouse(false)
+            C_Timer.After(5, function()
+                if not self._chatRequestCdUntil then return end
+                self._chatRequestCdUntil = nil
+                if not InCombatLockdown() then self:EnableMouse(true) end
+            end)
         end
     end)
 
@@ -2018,7 +2344,10 @@ local function GetOrCreateIcon(index)
     btn._text = text
 
     EABR.CreateIconCountOverlay(btn)
+    EABR.CreateIconQualityOverlay(btn)
+    EABR.CreateIconBagCountOverlay(btn)
     EABR.AttachIconHover(btn)
+    EABR.AttachIconTooltip(btn)
 
     iconPool[index] = btn
     return btn
@@ -2056,7 +2385,7 @@ end
 local function SetIconItem(btn, itemID, texture, label)
     if not InCombat() then
         btn:SetAttribute("type", "item")
-        btn:SetAttribute("item", "item:"..itemID)
+        btn:SetAttribute("item", "item:" .. itemID)
         btn:SetAttribute("spell", nil)
         btn:SetAttribute("macrotext", nil)
         btn:SetAttribute("unit", nil)
@@ -2101,8 +2430,11 @@ do
         e.texture = nil; e.label = nil; e.unit = nil; e.desaturated = false
         e.tooltipItem = nil
         e.cat = nil; e.data = nil; e.dismissKey = nil
-        e.restrictedSafe = nil
         e.isEating = nil; e.eatingExpirationTime = nil
+        e.isChatRequest = nil
+        e.qualityAtlas = nil
+        e.bagCount = nil
+        e.substitute = nil
         return e
     end
 
@@ -2120,14 +2452,21 @@ do
         elseif mode == "item" then
             SetIconItem(btn, m.itemID, m.texture, m.label)
         elseif mode == "macro" then
-            SetIconMacro(btn, m.macro, m.texture, nil)
+            SetIconMacro(btn, m.macro, m.texture, m.spellID)
             btn._tooltipItem = m.tooltipItem
         else -- "texture"
             SetIconTexture(btn, m.texture, m.label)
             if m.spellID then btn._tooltipSpell = m.spellID end
         end
+        btn._isChatRequest = m.isChatRequest and true or nil
+        if btn._chatRequestCdUntil and btn._chatRequestCdUntil > GetTime() then
+            btn:EnableMouse(false)
+        elseif not InCombat() then
+            btn:EnableMouse(true)
+        end
         btn._text:SetText(m.label or "")
         btn._icon:SetDesaturated(m.desaturated or false)
+        btn._tooltipLabel = m.label or nil
     end
 end
 
@@ -2176,6 +2515,8 @@ local function LayoutIcons()
     for i, btn in ipairs(allIcons) do
         btn:SetSize(sz, sz)
         btn:SetAlpha(p.opacity or 1.0)
+        EABR.SizeIconQuality(btn, sz)
+        EABR.SizeIconBagCount(btn, sz)
         btn:ClearAllPoints()
         btn:SetPoint("TOPLEFT", iconAnchor, "TOPLEFT", (i-1)*(sz+spacing), 0)
     end
@@ -2213,6 +2554,8 @@ local function ShowIcon(iconIdx, m)
         btn._text:Hide()
     end
     EABR.ApplyEatingVisual(btn, m)
+    EABR.ApplyIconQuality(btn, (not m.isEating) and m.qualityAtlas or nil)
+    EABR.ApplyIconBagCount(btn, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
     btn:Show()
     activeIcons[#activeIcons+1] = btn
 end
@@ -2269,10 +2612,23 @@ do
                     end
                     if isMissing then
                         local e = AcquireEntry()
-                        e.mode = "spell"; e.spellID = buff.castSpell
+                        e.spellID = buff.castSpell
                         e.label = ShortLabel(_G._EABR_SpellName(buff.castSpell, buff.name))
                         if buff.check == "huntersMark" then e.unit = "target" end
-                        e.cat = "raidbuff"; e.data = buff                        e.dismissKey = buff.key and ("raidbuff:" .. buff.key) or nil
+                        e.cat = "raidbuff"; e.data = buff
+                        e.dismissKey = buff.key and ("raidbuff:" .. buff.key) or nil
+                        if doReceiver then
+                            e.texture = Tex(buff.castSpell)
+                            if EABR.ChatRequestEnabled() then
+                                e.mode = "macro"
+                                e.macro = EABR.BuildChatRequestMacro(buff.key, buff.name)
+                                e.isChatRequest = true
+                            else
+                                e.mode = "texture"
+                            end
+                        else
+                            e.mode = "spell"
+                        end
                         missing[#missing+1] = e
                     end
                 end
@@ -2368,11 +2724,8 @@ do
                         local e = AcquireEntry()
                         e.mode = "spell"; e.spellID = aura.castSpell
                         e.label = ShortLabel(_G._EABR_SpellName(aura.castSpell, aura.name))
-                        e.cat = "aura"; e.data = aura                        e.dismissKey = "aura:" .. aura.key
-                        -- Collected under restriction => detection is restricted-safe,
-                        -- so the combat display path may show it (stances lack the
-                        -- whitelisted buffIDs the safe-check would otherwise require).
-                        if inCombat then e.restrictedSafe = true end
+                        e.cat = "aura"; e.data = aura
+                        e.dismissKey = "aura:" .. aura.key
                         missing[#missing+1] = e
                     end
                 end
@@ -2383,23 +2736,23 @@ end
 
 end
 
--- Weapon-enchant emit shared by the OOC consumable pass and the restricted
--- (M+/combat) pass. Detection uses GetWeaponEnchantInfo (inventory API), which
--- is not aura-restricted, so entries are flagged restrictedSafe for the combat
--- display path. Attached to EABR (not a file-scope local) to stay under the
--- Lua 5.1 200-local cap for this chunk.
+-- Weapon-enchant emit shared by the OOC and restricted (M+/combat) passes.
+-- Attached to EABR (not a file-scope local) to stay under the Lua 5.1 200-local cap.
 function EABR.EmitWeaponEnchantReminders(missing, co)
     local hasMH, mhExpire, _, _, hasOH, ohExpire = GetWeaponEnchantInfo()
-    for _, si in ipairs({{slot=16, has=hasMH, expire=mhExpire}, {slot=17, has=hasOH, expire=ohExpire}}) do
-        local r = EABR._resolved.we[si.slot]
+    for i = 1, 2 do
+        local slot = (i == 1) and 16 or 17
+        local has = (i == 1) and hasMH or hasOH
+        local expire = (i == 1) and mhExpire or ohExpire
+        local r = EABR._resolved.we[slot]
         local cat = r.cat
         local shouldRemind = false
         if EABR._previewForce and cat then
             shouldRemind = true
-        elseif cat and not si.has then
+        elseif cat and not has then
             shouldRemind = true
-        elseif cat and si.has and si.expire and si.expire > 0 then
-            local expireTime = si.expire / 1000 + GetTime()
+        elseif cat and has and expire and expire > 0 then
+            local expireTime = expire / 1000 + GetTime()
             if IsUnderDuration(3600, expireTime, "consumable") then
                 shouldRemind = true
             end
@@ -2408,13 +2761,15 @@ function EABR.EmitWeaponEnchantReminders(missing, co)
             local bestItemID = r.itemID
             local e = AcquireEntry()
             e.mode = "macro"
-            e.macro = "/use item:" .. bestItemID .. "\n/use " .. si.slot
+            e.macro = "/use item:" .. bestItemID .. "\n/use " .. slot
             e.texture = GetItemIcon(bestItemID) or 134400
-            e.label = ShortLabel(EllesmereUI.L(si.slot == 16 and "Main Hand" or "Off Hand"))
+            e.label = ShortLabel(EllesmereUI.L(slot == 16 and "Main Hand" or "Off Hand"))
             e.tooltipItem = bestItemID
+            e.qualityAtlas = EABR.GetItemQualityAtlas(bestItemID)
+            e.bagCount = CachedGetItemCount(bestItemID)
             e.desaturated = not r.hasBags
-            e.cat = "consumable"            e.dismissKey = "consumable:weapon_enchant_" .. si.slot
-            e.restrictedSafe = true
+            e.cat = "consumable"
+            e.dismissKey = "consumable:weapon_enchant_" .. slot
             missing[#missing+1] = e
         end
     end
@@ -2477,33 +2832,21 @@ function EABR.SectionShows(whereToShow, inInstance)
     return whereToShow[bucket] ~= false
 end
 
-function EABR.GetShowUnderMinutes(sectionKey)
+-- Global Display thresholds only. "Show Below Pre-Key" is the pre-key (Mythic 0)
+-- value so flasks/food are topped up before the key; keyed M+ ignores thresholds.
+function EABR.GetShowUnderMinutes()
     if not (db and db.profile) then return 0 end
     local disp = db.profile.display or {}
-    local genDefault = disp.showUnder or 5
-    local mplusDefault = disp.showUnderMPlus or 40
-    local sec, useDefaultField, showField, mplusField = db.profile.consumables,
-        "useDefaultTiming", "showUnder", "showUnderMPlus"
-    if sectionKey == "raidbuff" then
-        sec = db.profile.raidBuffs
-    elseif sectionKey == "aura" then
-        sec = db.profile.auras
-    elseif sectionKey == "special" then
-        useDefaultField, showField, mplusField =
-            "specialsUseDefaultTiming", "specialsShowUnder", "specialsShowUnderMPlus"
+    if EABR.InMythicZeroDungeon() then
+        return disp.showUnderMPlus or 40
     end
-    local general, mplus = genDefault, mplusDefault
-    if sec and sec[useDefaultField] == false then
-        if sec[showField] ~= nil then general = sec[showField] end
-        if sec[mplusField] ~= nil then mplus = sec[mplusField] end
-    end
-    if InMythicPlusKey() then return mplus end
-    return general
+    return disp.showUnder or 5
 end
 
 function EABR.IsUnderDuration(duration, expirationTime, sectionKey)
     if not (db and db.profile and duration and expirationTime and sectionKey) then return false end
-    local thresholdMinutes = EABR.GetShowUnderMinutes(sectionKey)
+    if not EABR.ShowUnderThresholdApplies() then return false end
+    local thresholdMinutes = EABR.GetShowUnderMinutes()
     local thresholdSeconds = thresholdMinutes * 60
     if thresholdSeconds > 0 and duration >= thresholdSeconds then
         local now = GetTime()
@@ -2527,8 +2870,9 @@ end
 -- Set of player classes currently present in the group (online, in range, alive),
 -- excluding the local player. Built on demand for the "I am missing others' buffs"
 -- view so a buff is only flagged when someone who can actually cast it is nearby.
+EABR._groupClassSet = EABR._groupClassSet or {}
 function EABR.BuildGroupClassSet()
-    local set = {}
+    local set = wipe(EABR._groupClassSet)
     if IsInRaid() then
         for i = 1, GetNumGroupMembers() do
             local u = "raid"..i
@@ -2670,16 +3014,16 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                     local e = AcquireEntry()
                     e.mode = "spell"; e.spellID = missingL.castSpell
                     e.label = ShortLabel(_G._EABR_SpellName(missingL.castSpell, missingL.name), "ROGUE")
-                    e.cat = "consumable"; e.data = missingL                    e.dismissKey = "consumable:rogue_lethal"
-                    e.restrictedSafe = true  -- poison auras are whitelisted (combat/M+ safe)
+                    e.cat = "consumable"; e.data = missingL
+                    e.dismissKey = "consumable:rogue_lethal"
                     missing[#missing+1] = e
                 end
                 if missingNL and activeNL < reqNL then
                     local e = AcquireEntry()
                     e.mode = "spell"; e.spellID = missingNL.castSpell
                     e.label = ShortLabel(_G._EABR_SpellName(missingNL.castSpell, missingNL.name), "ROGUE")
-                    e.cat = "consumable"; e.data = missingNL                    e.dismissKey = "consumable:rogue_nonlethal"
-                    e.restrictedSafe = true  -- poison auras are whitelisted (combat/M+ safe)
+                    e.cat = "consumable"; e.data = missingNL
+                    e.dismissKey = "consumable:rogue_nonlethal"
                     missing[#missing+1] = e
                 end
             end
@@ -2701,8 +3045,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                             local e = AcquireEntry()
                             e.mode = "spell"; e.spellID = rite.castSpell
                             e.label = ShortLabel(_G._EABR_SpellName(rite.castSpell, rite.name))
-                            e.cat = "consumable"; e.data = rite                            e.dismissKey = "consumable:" .. rite.key
-                            e.restrictedSafe = true  -- weapon-enchant detection (combat/M+ safe)
+                            e.cat = "consumable"; e.data = rite
+                            e.dismissKey = "consumable:" .. rite.key
                             missing[#missing+1] = e
                             break -- rites are mutually exclusive weapon enchants
                         end
@@ -2742,8 +3086,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                             local e = AcquireEntry()
                             e.mode = "spell"; e.spellID = imbue.castSpell
                             e.label = ShortLabel(_G._EABR_SpellName(imbue.castSpell, imbue.name), "SHAMAN_IMBUE")
-                            e.cat = "consumable"; e.data = imbue                            e.dismissKey = "consumable:" .. imbue.key
-                            e.restrictedSafe = true  -- weapon-enchant detection (combat/M+ safe)
+                            e.cat = "consumable"; e.data = imbue
+                            e.dismissKey = "consumable:" .. imbue.key
                             missing[#missing+1] = e
                         end
                     end
@@ -2766,7 +3110,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                             local e = AcquireEntry()
                             e.mode = "spell"; e.spellID = castID
                             e.label = ShortLabel(shield.name, "SHAMAN_SHIELD")
-                            e.cat = "consumable"; e.data = shield                            e.dismissKey = "consumable:" .. shield.key
+                            e.cat = "consumable"; e.data = shield
+                            e.dismissKey = "consumable:" .. shield.key
                             missing[#missing+1] = e
                         end
                     end
@@ -2777,16 +3122,19 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
 
         -- === CONSUMABLES (per-item "Show In" tier + open world; see ConsumableShows) ===
 
-        -- Augment Runes (not trackable under the aura lock -- OOC only)
-        if co.enabled.augment_rune and not inCombat and EABR.ConsumableShows(co, "augment_rune", inInstance) then
-            local hasRuneBuff = InMythicPlusKey() or PlayerHasAuraByID(RUNE_BUFF_IDS)
+        -- Augment Runes
+        if co.enabled.augment_rune and EABR.ConsumableShows(co, "augment_rune", inInstance) then
+            local hasRuneBuff = PlayerHasAuraByID(RUNE_BUFF_IDS)
             if not hasRuneBuff then
                 local runeItem = EABR._resolved.rune.itemID
                 if runeItem then
                     local e = AcquireEntry()
                     e.mode = "item"; e.itemID = runeItem
                     e.texture = GetItemIcon(runeItem); e.label = EllesmereUI.L(ShortLabel("Augment Rune"))
-                    e.cat = "consumable"                    e.dismissKey = "consumable:rune"
+                    e.qualityAtlas = EABR.GetItemQualityAtlas(runeItem)
+                    e.bagCount = CachedGetItemCount(runeItem)
+                    e.cat = "consumable"
+                    e.dismissKey = "consumable:rune"
                     missing[#missing+1] = e
                 end
             end
@@ -2806,8 +3154,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
             end
         end
 
-        -- Flask (PlayerHasFlaskBuff self-suppresses in M+/PvP/restricted where the
-        -- buff aura can't be read, so a nil read there never false-flashes "missing").
+        -- Flask / Food: always remind when not detected. Combat/M+ only skips the
+        -- early "show below" threshold (IsUnderDuration), not fully-missing icons.
         if co.enabled.flask and EABR.ConsumableShows(co, "flask", inInstance) then
             if not PlayerHasFlaskBuff() then
                 local rf = EABR._resolved.flask
@@ -2817,14 +3165,16 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                     e.mode = "item"; e.itemID = flaskItemID
                     e.texture = GetItemIcon(flaskItemID) or 134830
                     e.label = EllesmereUI.L("Flask")
+                    e.qualityAtlas = EABR.GetItemQualityAtlas(flaskItemID)
+                    e.bagCount = CachedGetItemCount(flaskItemID)
                     e.desaturated = not rf.hasBags
-                    e.cat = "consumable"                    e.dismissKey = "consumable:flask"
+                    e.cat = "consumable"
+                    e.dismissKey = "consumable:flask"
                     missing[#missing+1] = e
                 end
             end
         end
 
-        -- Food / Well Fed (OOC only; detection uses snapshot during keystones)
         if co.enabled.food and EABR.ConsumableShows(co, "food", inInstance) then
             if not PlayerHasWellFed() then
                 local foodItemID = EABR._resolved.food.itemID
@@ -2833,7 +3183,12 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                     e.mode = "item"; e.itemID = foodItemID
                     e.texture = GetItemIcon(foodItemID) or 134062
                     e.label = EllesmereUI.L("Food")
-                    e.cat = "consumable"                    e.dismissKey = "consumable:food"
+                    e.qualityAtlas = EABR.GetItemQualityAtlas(foodItemID)
+                    e.bagCount = CachedGetItemCount(foodItemID)
+                    e.desaturated = not EABR._resolved.food.hasBags
+                    e.substitute = EABR._resolved.food.isSubstitute
+                    e.cat = "consumable"
+                    e.dismissKey = "consumable:food"
                     if EABR.IsPlayerEating() then
                         e.isEating = true
                         e.eatingExpirationTime = EABR.GetEatingExpirationTime()
@@ -2864,7 +3219,10 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                         e.mode = "item"; e.itemID = INKY_BLACK_ITEM
                         e.texture = GetItemIcon(INKY_BLACK_ITEM)
                         e.label = EllesmereUI.L(ShortLabel("Inky Black Potion"))
-                        e.cat = "consumable"                        e.dismissKey = "consumable:inky_black"
+                        e.qualityAtlas = EABR.GetItemQualityAtlas(INKY_BLACK_ITEM)
+                        e.bagCount = CachedGetItemCount(INKY_BLACK_ITEM)
+                        e.cat = "consumable"
+                        e.dismissKey = "consumable:inky_black"
                         missing[#missing+1] = e
                     end
                 end
@@ -2881,20 +3239,19 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 local e = AcquireEntry()
                 e.mode = "spell"; e.spellID = esOrbit.castSpell
                 e.label = ShortLabel(esOrbit.name, "SHAMAN_SHIELD")
-                e.cat = "consumable"; e.data = esOrbit                e.dismissKey = "consumable:" .. esOrbit.key
-                e.restrictedSafe = true  -- Earth Shield (383648) is whitelisted (combat/M+ safe)
+                e.cat = "consumable"; e.data = esOrbit
+                e.dismissKey = "consumable:" .. esOrbit.key
                 missing[#missing+1] = e
             end
         end
     end
 
     ---------------------------------------------------------------------------
-    --  Healthstone in bags (OOC only, group; per-item Show In / open world)
+    --  Healthstone in bags (group; Where to Show governs visibility)
     ---------------------------------------------------------------------------
-    if not inCombat and (IsInGroup() or IsInRaid()) and EABR.ConsumableShows(co, "healthstone", inInstance) then
+    if (IsInGroup() or IsInRaid()) and EABR.ConsumableShows(co, "healthstone", inInstance) then
         local co = db.profile.consumables
         if co and co.enabled and co.enabled.healthstone ~= false then
-            -- Only remind if a Warlock is in the group
             local hasWarlock = false
             if IsInRaid() then
                 for i = 1, GetNumGroupMembers() do
@@ -2914,9 +3271,17 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
             local hasHealthstone = EABR._resolved.healthstone.hasStone
             if hasWarlock and not hasHealthstone then
                 local e = AcquireEntry()
-                e.mode = "texture"; e.texture = 538745
+                e.texture = 538745
                 e.label = EllesmereUI.L("HS")
-                e.cat = "consumable"                e.dismissKey = "consumable:healthstone"
+                e.cat = "consumable"
+                e.dismissKey = "consumable:healthstone"
+                if not inCombat and GetPlayerClass() ~= "WARLOCK" and EABR.ChatRequestEnabled() then
+                    e.mode = "macro"
+                    e.macro = EABR.BuildChatRequestMacro("healthstone", "Healthstones")
+                    e.isChatRequest = true
+                else
+                    e.mode = "texture"
+                end
                 missing[#missing+1] = e
             end
         end
@@ -2936,7 +3301,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 local e = AcquireEntry()
                 e.mode = "texture"; e.texture = PARTNERED_TRINKET.icon
                 e.label = EllesmereUI.L("Whistle")
-                e.cat = "consumable"                e.dismissKey = "consumable:coaches_whistle"
+                e.cat = "consumable"
+                e.dismissKey = "consumable:coaches_whistle"
                 missing[#missing+1] = e
             end
         end
@@ -2949,7 +3315,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
         local co = db.profile.consumables
         if co and co.enabled and co.enabled.runeforge ~= false then
             local needsRune = false
-            for _, slot in ipairs({16, 17}) do
+            for i = 1, 2 do
+                local slot = (i == 1) and 16 or 17
                 local link = GetInventoryItemLink("player", slot)
                 if link then
                     local ench = link:match("item:%d+:(-?%d+):")
@@ -2961,7 +3328,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 local e = AcquireEntry()
                 e.mode = "texture"; e.texture = 135957
                 e.label = EllesmereUI.L("Rune")
-                e.cat = "consumable"                e.dismissKey = "consumable:runeforge"
+                e.cat = "consumable"
+                e.dismissKey = "consumable:runeforge"
                 missing[#missing+1] = e
             end
         end
@@ -3098,7 +3466,8 @@ local function Refresh()
                 e.mode = "texture"
                 e.texture = petIcon
                 e.label = petLabel
-                e.cat = "consumable"                e.dismissKey = "consumable:pet"
+                e.cat = "consumable"
+                e.dismissKey = "consumable:pet"
                 missing[#missing+1] = e
             end
             if not suppress and playerClass == "WARLOCK" and specID == 266
@@ -3111,7 +3480,8 @@ local function Refresh()
                     e.mode = "texture"
                     e.texture = 136216
                     e.label = EllesmereUI.L("Felguard")
-                    e.cat = "consumable"                    e.dismissKey = "consumable:wrong_pet"
+                    e.cat = "consumable"
+                    e.dismissKey = "consumable:wrong_pet"
                     missing[#missing+1] = e
                 end
             end
@@ -3135,7 +3505,8 @@ local function Refresh()
                     e.mode = "texture"
                     e.texture = (passiveIsToken and _G[passiveTex]) or passiveTex or petIcon
                     e.label = PET_MODE_PASSIVE or "Passive"
-                    e.cat = "consumable"                    e.dismissKey = "consumable:pet_passive"
+                    e.cat = "consumable"
+                    e.dismissKey = "consumable:pet_passive"
                     missing[#missing+1] = e
                 end
             end
@@ -3153,8 +3524,9 @@ local function Refresh()
     ---------------------------------------------------------------------------
     if inCombat then
         _pt = EABR.ProfBegin("Display")
-        -- Combat path: use non-secure visual-only icons.
-        -- Fade out stale secure buttons (SetAlpha is safe during combat).
+        -- Combat path: visual-only icons (same policy as BuffReminders / CRB).
+        -- Secure click-to-cast cannot be reliably reconfigured under lockdown, so
+        -- reminders still show but clicks work only out of combat.
         FadeOutSecureIcons()
         HideCombatIcons()
         HideCursorIcons()
@@ -3162,48 +3534,38 @@ local function Refresh()
             local useCursor = db.profile.display.cursorAttach and cursorAnchor
             local combatIdx, cursorIdx = 0, 0
             for _, m in ipairs(missing) do
-                -- Skip middle-click dismissed reminders
                 local dk = m.dismissKey or (m.data and m.data.key and (m.cat .. ":" .. m.data.key)) or nil
                 if not (dk and _dismissedUntilLoad[dk]) then
-                    -- Only show reminders with all-whitelisted buff IDs.
-                    -- huntersMark uses a state flag, always safe.
-                    local safe = false
-                    if m.restrictedSafe then
-                        safe = true  -- inventory-based detection (weapon enchants), safe in combat/M+
-                    elseif m.mode == "texture" then
-                        safe = true  -- texture-mode entries (pets) use no aura API
-                    elseif m.data and m.data.check == "huntersMark" then
-                        safe = true
-                    elseif m.data and m.data.buffIDs then
-                        safe = true
-                        for _, id in ipairs(m.data.buffIDs) do
-                            if not NON_SECRET_SPELL_IDS[id] then safe = false; break end
-                        end
+                    local f
+                    if useCursor and IsImportantBuff(m) then
+                        cursorIdx = cursorIdx + 1
+                        ShowCursorIcon(cursorIdx, m)
+                        f = cursorActiveIcons[#cursorActiveIcons]
+                    else
+                        combatIdx = combatIdx + 1
+                        ShowCombatIcon(combatIdx, m)
+                        f = combatActiveIcons[#combatActiveIcons]
                     end
-                    if safe then
-                        local f
-                        if useCursor and IsImportantBuff(m) then
-                            cursorIdx = cursorIdx + 1
-                            ShowCursorIcon(cursorIdx, m)
-                            f = cursorActiveIcons[#cursorActiveIcons]
-                        else
-                            combatIdx = combatIdx + 1
-                            ShowCombatIcon(combatIdx, m)
-                            f = combatActiveIcons[#combatActiveIcons]
-                        end
-                        if f then
-                            RemoveGlow(f)
-                            local p = db.profile.display
-                            local gc = p.glowColor or DEFAULT_GLOW_COLOR
-                            local baseScale = p.scale or 1.0
-                            local sz = floor(ICON_SIZE * baseScale + 0.5)
-                            ApplyGlow(f, p.glowType or 0, gc.r, gc.g, gc.b, sz)
-                        end
+                    if f then
+                        RemoveGlow(f)
+                        local p = db.profile.display
+                        local gc = p.glowColor or DEFAULT_GLOW_COLOR
+                        local baseScale = p.scale or 1.0
+                        local sz = floor(ICON_SIZE * baseScale + 0.5)
+                        ApplyGlow(f, p.glowType or 0, gc.r, gc.g, gc.b, sz)
                     end
                 end
             end
-            if combatIdx > 0 then EllesmereUI.SetElementVisibility(combatAnchor, true); LayoutCombatIcons() end
-            if cursorIdx > 0 then cursorAnchor:Show(); EllesmereUI.SetElementVisibility(cursorAnchor, true); LayoutCursorIcons() end
+            if combatIdx > 0 and combatAnchor then
+                combatAnchor:Show()
+                EllesmereUI.SetElementVisibility(combatAnchor, true)
+                LayoutCombatIcons()
+            end
+            if cursorIdx > 0 and cursorAnchor then
+                cursorAnchor:Show()
+                EllesmereUI.SetElementVisibility(cursorAnchor, true)
+                LayoutCursorIcons()
+            end
         end
         EABR.ProfEnd("Display", _pt)
         return
@@ -3313,7 +3675,7 @@ UpdateDurationTicker = function()
         EABR._durationTimer = nil
     end
 
-    if not (EABR._nextDurationRefreshTime and db and not InCombat() and not InMythicPlusKey()) then
+    if not (EABR._nextDurationRefreshTime and db and EABR.ShowUnderThresholdApplies()) then
         return
     end
 
@@ -3322,7 +3684,7 @@ UpdateDurationTicker = function()
 
     EABR._durationTimer = C_Timer.NewTimer(delay, function()
         EABR._durationTimer = nil
-        if InCombat() or InMythicPlusKey() then return end
+        if not EABR.ShowUnderThresholdApplies() then return end
         RequestRefresh()
     end)
 end
@@ -3856,27 +4218,7 @@ function EABR:OnInitialize()
         co.showConsumablesNonInstanced, co.showSpecialsNonInstanced = nil, nil
         co.showIn, co.openWorld, co.sound, co.specialsShowIn = nil, nil, nil, nil
     end
-    -- Migrate timing thresholds to display defaults + optional per-section overrides.
-    local function MigrateTimingSection(sec, isSpecials)
-        if not sec then return end
-        local dungeonKey = isSpecials and "specialsShowUnderDungeon" or "showUnderDungeon"
-        local raidKey = isSpecials and "specialsShowUnderRaid" or "showUnderRaid"
-        local useDefaultKey = isSpecials and "specialsUseDefaultTiming" or "useDefaultTiming"
-        local showKey = isSpecials and "specialsShowUnder" or "showUnder"
-        local mplusKey = isSpecials and "specialsShowUnderMPlus" or "showUnderMPlus"
-        if sec[dungeonKey] == nil and sec[raidKey] == nil then return end
-        local dungeon = sec[dungeonKey] or 20
-        local raid = sec[raidKey] or 10
-        if dungeon == 20 and raid == 10 then
-            sec[useDefaultKey] = true
-        else
-            sec[useDefaultKey] = false
-            sec[showKey] = raid
-            sec[mplusKey] = dungeon
-        end
-        sec[dungeonKey] = nil
-        sec[raidKey] = nil
-    end
+    -- Timing thresholds are display-global only (Show Below / Show Below Pre-Key).
     if disp then
         if disp.showUnderDurationDungeon ~= nil or disp.showUnderDurationRaid ~= nil then
             if disp.showUnder == nil then disp.showUnder = disp.showUnderDurationRaid or 5 end
@@ -3887,10 +4229,20 @@ function EABR:OnInitialize()
         if disp.showUnder == nil then disp.showUnder = 5 end
         if disp.showUnderMPlus == nil then disp.showUnderMPlus = 40 end
     end
-    MigrateTimingSection(rb, false)
-    MigrateTimingSection(au, false)
-    MigrateTimingSection(co, false)
-    MigrateTimingSection(co, true)
+    local function ClearSectionTiming(sec, isSpecials)
+        if not sec then return end
+        if isSpecials then
+            sec.specialsShowUnderDungeon, sec.specialsShowUnderRaid = nil, nil
+            sec.specialsUseDefaultTiming, sec.specialsShowUnder, sec.specialsShowUnderMPlus = nil, nil, nil
+        else
+            sec.showUnderDungeon, sec.showUnderRaid = nil, nil
+            sec.useDefaultTiming, sec.showUnder, sec.showUnderMPlus = nil, nil, nil
+        end
+    end
+    ClearSectionTiming(rb, false)
+    ClearSectionTiming(au, false)
+    ClearSectionTiming(co, false)
+    ClearSectionTiming(co, true)
     if rb then rb.scale = nil end
     if au then au.scale = nil end
     if co then co.scale = nil end
@@ -4199,9 +4551,8 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
             and UnitExists("target") and C_UnitAuras.GetUnitAuraBySpellID("target", 257284) then
             _huntersMarkNeeded = false
         end
-        -- Hide secure buttons BEFORE setting combat flag (HideAllIcons
-        -- checks InCombat and returns early if true). PLAYER_REGEN_DISABLED
-        -- fires before InCombatLockdown() returns true, so Hide() is safe.
+        -- Hide secure click-to-cast before lockdown (same policy as BuffReminders /
+        -- CRB). Combat Refresh shows visual-only icons; clicks resume OOC.
         HideAllIcons()
         HideCursorIcons()
         _eabrInCombat = true
