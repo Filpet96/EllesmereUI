@@ -2276,6 +2276,15 @@ initFrame:SetScript("OnEvent", function(self)
             elseif b.type == "travel" then
                 typeRows = {
                     MkToggle("Random Hearthstone", "randomizeHs", "Uses a random hearthstone toy variant each cast."),
+                    -- Default ON (nil = enabled), so this can't use MkToggle's
+                    -- `== true` read.
+                    { type = "toggle", text = "Clickable Teleports",
+                      tooltip = "Left-click a ready Mythic+ teleport in the tooltip to cast it.",
+                      getValue = function() return s.clickableTeleports ~= false end,
+                      setValue = function(v)
+                          s.clickableTeleports = v and true or false
+                          Apply()
+                      end },
                 }
             elseif b.type == "micromenu" then
                 -- Align Content returns here as a type row (its shared-row
@@ -2314,6 +2323,7 @@ initFrame:SetScript("OnEvent", function(self)
                           return v
                       end,
                       setValue = function(v) s.iconSpacing = v; Apply() end },
+                    MkToggle("Character Stats Tooltip", "charStatsTooltip", "Shows item level and secondary stats in the Character button's tooltip."),
                     -- Individual button toggles live in the "Menu Elements"
                     -- checklist dropdown appended after the shared row loop.
                 }
