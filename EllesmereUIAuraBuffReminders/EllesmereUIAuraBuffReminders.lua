@@ -1190,6 +1190,61 @@ function EABR.ConsumablePresenceUnverifiable()
     return InCombat() or InMythicPlusKey()
 end
 
+-- Soulwell tracking only runs when the Healthstone reminder is enabled.
+function EABR.HealthstoneReminderEnabled()
+    local co = db and db.profile and db.profile.consumables
+    return co and co.enabled and co.enabled.healthstone ~= false
+end
+
+-- Infer soulwell presence from Create Soulwell (29893) + UnitPosition.
+-- Well lasts 2 min; suppress HS chat-ask while the player is within ~15 yd.
+function EABR.NoteSoulwellCreated(unit)
+    if not EABR.HealthstoneReminderEnabled() then
+        EABR._soulwell = nil
+        return
+    end
+    if not unit or not UnitExists(unit) then return end
+    local y, x, _, instanceID = UnitPosition(unit)
+    if not x then
+        y, x, _, instanceID = UnitPosition("player")
+    end
+    if not x then return end
+    EABR._soulwell = {
+        x = x, y = y, instanceID = instanceID,
+        expires = GetTime() + 120,
+    }
+    if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+    C_Timer.After(120.25, function()
+        if not EABR.HealthstoneReminderEnabled() then
+            EABR._soulwell = nil
+            return
+        end
+        local sw = EABR._soulwell
+        if sw and GetTime() >= sw.expires then
+            EABR._soulwell = nil
+            if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+        end
+    end)
+end
+
+function EABR.IsSoulwellNearby()
+    if not EABR.HealthstoneReminderEnabled() then
+        EABR._soulwell = nil
+        return false
+    end
+    local sw = EABR._soulwell
+    if not sw then return false end
+    if GetTime() >= sw.expires then
+        EABR._soulwell = nil
+        return false
+    end
+    local y, x, _, instanceID = UnitPosition("player")
+    if not x then return false end
+    if sw.instanceID and instanceID and sw.instanceID ~= instanceID then return false end
+    local dx, dy = x - sw.x, y - sw.y
+    return (dx * dx + dy * dy) <= 225 -- 15 yd squared
+end
+
 local function PlayerHasBuffByName(buffName)
     if EABR.ConsumablePresenceUnverifiable() then return true end
     if _AC.valid then
@@ -2080,6 +2135,9 @@ local function HideCombatIcons()
         end
     end
     wipe(combatActiveIcons)
+    if EABR.SetProviderCastCombatVisible then
+        EABR.SetProviderCastCombatVisible(false)
+    end
     if combatAnchor then EllesmereUI.SetElementVisibility(combatAnchor, false) end
 end
 
@@ -2118,22 +2176,156 @@ local function ShowCombatIcon(iconIdx, m)
     combatActiveIcons[#combatActiveIcons+1] = f
 end
 
+-- Left-align like OOC LayoutIcons so the pre-positioned provider cast button
+-- (pinned TOPLEFT of combatAnchor OOC) stays slot 0 without SetPoint in combat.
 local function LayoutCombatIcons()
-    local count = #combatActiveIcons; if count == 0 then return end
+    local providerVisible = EABR._providerCastVisible
+    local count = #combatActiveIcons
+    if count == 0 and not providerVisible then return end
     local p = db.profile.display
     local spacing = p.iconSpacing or 8
     local baseScale = p.scale or 1.0
     local sz = floor(ICON_SIZE * baseScale + 0.5)
-    local totalW = (count * sz) + ((count-1) * spacing)
-    local startX = -(totalW/2) + (sz/2)
+    local xOff = providerVisible and (sz + spacing) or 0
     for i, f in ipairs(combatActiveIcons) do
         f:SetSize(sz, sz)
         f:SetAlpha(p.opacity or 1.0)
         EABR.SizeIconQuality(f, sz)
         EABR.SizeIconBagCount(f, sz)
         f:ClearAllPoints()
-        f:SetPoint("CENTER", combatAnchor, "CENTER", startX + (i-1)*(sz+spacing), 0)
+        f:SetPoint("TOPLEFT", combatAnchor, "TOPLEFT", xOff + (i-1)*(sz+spacing), 0)
     end
+end
+
+-------------------------------------------------------------------------------
+--  Provider raid-buff cast button — SecureActionButton usable in combat.
+--  Spell attributes + size/point are set OOC only; combat toggles alpha/mouse.
+-------------------------------------------------------------------------------
+function EABR.LayoutProviderCastHome()
+    if InCombatLockdown() then return end
+    local btn = EABR._providerCastBtn
+    if not btn or not iconAnchor then return end
+    local p = db and db.profile and db.profile.display
+    local baseScale = (p and p.scale) or 1.0
+    local sz = floor(ICON_SIZE * baseScale + 0.5)
+    btn:SetSize(sz, sz)
+    btn:ClearAllPoints()
+    -- Anchor to iconAnchor (same spot as combat row slot 0). Parent is UIParent
+    -- so combatAnchor's EnableMouse(false) cannot swallow clicks.
+    btn:SetPoint("TOPLEFT", iconAnchor, "TOPLEFT", 0, 0)
+    EABR.SizeIconQuality(btn, sz)
+    EABR.SizeIconBagCount(btn, sz)
+end
+
+function EABR.EnsureProviderCastButton()
+    if EABR._providerCastBtn then return EABR._providerCastBtn end
+    if not iconAnchor or InCombatLockdown() then return nil end
+    local btn = CreateFrame("Button", "EABR_ProviderCast", UIParent, "SecureActionButtonTemplate")
+    btn:SetSize(ICON_SIZE, ICON_SIZE)
+    btn:RegisterForClicks("LeftButtonDown", "LeftButtonUp", "MiddleButtonUp")
+    securecallfunction(btn.SetPassThroughButtons, btn, "RightButton")
+    btn:SetAttribute("useOnKeyDown", false)
+    btn:SetFrameStrata(GetStrata())
+    btn:SetFrameLevel(120)
+    btn:HookScript("PostClick", function(self, button)
+        if button == "MiddleButton" and self._dismissKey then
+            _dismissedUntilLoad[self._dismissKey] = true
+            if _G._EABR_RequestRefresh then _G._EABR_RequestRefresh() end
+        end
+    end)
+    local icon = btn:CreateTexture(nil, "ARTWORK")
+    icon:SetAllPoints(); icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
+    btn._icon = icon
+    local PP = EllesmereUI and EllesmereUI.PP
+    if PP then PP.CreateBorder(btn, 0, 0, 0, 1, 1, "OVERLAY", 7) end
+    local text = btn:CreateFontString(nil, "OVERLAY")
+    text:SetPoint("TOP", btn, "BOTTOM", 0, -2)
+    SetABRFont(text, ResolveFontPath(), 11)
+    text:SetTextColor(1, 1, 1, 1)
+    btn._text = text
+    EABR.CreateIconCountOverlay(btn)
+    EABR.CreateIconQualityOverlay(btn)
+    EABR.CreateIconBagCountOverlay(btn)
+    EABR.AttachIconHover(btn)
+    EABR.AttachIconTooltip(btn)
+    btn:SetAlpha(0)
+    btn:EnableMouse(true)
+    btn:Show() -- stay shown; combat toggles alpha only
+    btn:SetPoint("TOPLEFT", iconAnchor, "TOPLEFT", 0, 0)
+    EABR._providerCastBtn = btn
+    EABR._providerCastVisible = false
+    return btn
+end
+
+function EABR.SyncProviderCastSpell()
+    if InCombatLockdown() then return end
+    local btn = EABR.EnsureProviderCastButton()
+    if not btn then return end
+    local playerClass = GetPlayerClass()
+    local spellID
+    for _, buff in ipairs(RAID_BUFFS) do
+        if buff.class == playerClass and buff.check == "raid" and Known(buff.castSpell) then
+            spellID = buff.castSpell
+            break
+        end
+    end
+    EABR._providerCastSpell = spellID
+    if spellID then
+        btn:SetAttribute("type", "spell")
+        btn:SetAttribute("spell", spellID)
+        btn:SetAttribute("item", nil)
+        btn:SetAttribute("macrotext", nil)
+        btn:SetAttribute("unit", nil) -- raid buffs are self-cast, no unit needed
+        btn:SetAttribute("useOnKeyDown", false)
+        btn._icon:SetTexture(Tex(spellID) or 134400)
+        btn._tooltipSpell = spellID
+        btn._tooltipItem = nil
+        btn:EnableMouse(true)
+    end
+    EABR.LayoutProviderCastHome()
+end
+
+-- Combat path may only change alpha + child visuals. EnableMouse / SetFrameLevel /
+-- SetAttribute are protected on this SecureActionButton under lockdown.
+function EABR.SetProviderCastCombatVisible(visible, m)
+    local btn = EABR._providerCastBtn
+    if not btn then
+        EABR._providerCastVisible = false
+        return
+    end
+    if not visible or not m or not EABR._providerCastSpell then
+        EABR._providerCastVisible = false
+        btn:SetAlpha(0)
+        if btn._text then btn._text:SetText(""); btn._text:Hide() end
+        if btn._eabrGlowWrapper then btn._eabrGlowWrapper:Hide() end
+        return
+    end
+    EABR._providerCastVisible = true
+    btn._dismissKey = m.dismissKey or nil
+    local spellID = m.spellID or EABR._providerCastSpell
+    btn._icon:SetTexture(m.texture or Tex(spellID) or 134400)
+    EABR.ApplyIconTooltipData(btn, m)
+    local p = db and db.profile and db.profile.display
+    if p and p.showText then
+        local tc = p.textColor or DEFAULT_TEXT_COLOR
+        SetABRFont(btn._text, ResolveFontPath(p.textFont), p.textSize or 11)
+        btn._text:ClearAllPoints()
+        local tp, ip = GetTextAnchorPoints(p)
+        btn._text:SetPoint(tp, btn, ip, p.textXOffset or 0, p.textYOffset or -2)
+        btn._text:SetTextColor(tc.r, tc.g, tc.b, 1)
+        btn._text:SetText(m.label or "")
+        btn._text:SetAlpha(1)
+        btn._text:Show()
+    else
+        btn._text:SetText("")
+        btn._text:Hide()
+    end
+    if m.groupTotal then
+        EABR.ApplyIconGroupCoverage(btn, m.groupHave, m.groupTotal)
+    else
+        EABR.ApplyIconBagCount(btn, nil, nil, nil)
+    end
+    btn:SetAlpha((p and p.opacity) or 1)
 end
 
 -------------------------------------------------------------------------------
@@ -3306,7 +3498,8 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 end
             end
             local hasHealthstone = EABR._resolved.healthstone.hasStone
-            if hasWarlock and not hasHealthstone then
+            -- Soulwell nearby: grab from the well instead of asking in chat.
+            if hasWarlock and not hasHealthstone and not EABR.IsSoulwellNearby() then
                 local e = AcquireEntry()
                 e.texture = 538745
                 e.label = EllesmereUI.L("HS")
@@ -3561,39 +3754,56 @@ local function Refresh()
     ---------------------------------------------------------------------------
     if inCombat then
         _pt = EABR.ProfBegin("Display")
-        -- Combat path: visual-only icons (same policy as BuffReminders / CRB).
-        -- Secure click-to-cast cannot be reliably reconfigured under lockdown, so
-        -- reminders still show but clicks work only out of combat.
+        -- Combat path: visual-only icons for most reminders. Provider raid buffs
+        -- use a pre-bound SecureActionButton (attributes set OOC) so rebuffs
+        -- stay clickable under lockdown.
         FadeOutSecureIcons()
         HideCombatIcons()
         HideCursorIcons()
+        local providerEntry
         if #missing > 0 then
             local useCursor = db.profile.display.cursorAttach and cursorAnchor
             local combatIdx, cursorIdx = 0, 0
             for _, m in ipairs(missing) do
                 local dk = m.dismissKey or (m.data and m.data.key and (m.cat .. ":" .. m.data.key)) or nil
                 if not (dk and _dismissedUntilLoad[dk]) then
-                    local f
-                    if useCursor and IsImportantBuff(m) then
-                        cursorIdx = cursorIdx + 1
-                        ShowCursorIcon(cursorIdx, m)
-                        f = cursorActiveIcons[#cursorActiveIcons]
+                    -- Self-cast raid buff: dedicated secure button (not cursor).
+                    if m.cat == "raidbuff" and m.mode == "spell" then
+                        providerEntry = m
                     else
-                        combatIdx = combatIdx + 1
-                        ShowCombatIcon(combatIdx, m)
-                        f = combatActiveIcons[#combatActiveIcons]
-                    end
-                    if f then
-                        RemoveGlow(f)
-                        local p = db.profile.display
-                        local gc = p.glowColor or DEFAULT_GLOW_COLOR
-                        local baseScale = p.scale or 1.0
-                        local sz = floor(ICON_SIZE * baseScale + 0.5)
-                        ApplyGlow(f, p.glowType or 0, gc.r, gc.g, gc.b, sz)
+                        local f
+                        if useCursor and IsImportantBuff(m) then
+                            cursorIdx = cursorIdx + 1
+                            ShowCursorIcon(cursorIdx, m)
+                            f = cursorActiveIcons[#cursorActiveIcons]
+                        else
+                            combatIdx = combatIdx + 1
+                            ShowCombatIcon(combatIdx, m)
+                            f = combatActiveIcons[#combatActiveIcons]
+                        end
+                        if f then
+                            RemoveGlow(f)
+                            local p = db.profile.display
+                            local gc = p.glowColor or DEFAULT_GLOW_COLOR
+                            local baseScale = p.scale or 1.0
+                            local sz = floor(ICON_SIZE * baseScale + 0.5)
+                            ApplyGlow(f, p.glowType or 0, gc.r, gc.g, gc.b, sz)
+                        end
                     end
                 end
             end
-            if combatIdx > 0 and combatAnchor then
+            if providerEntry then
+                EABR.SetProviderCastCombatVisible(true, providerEntry)
+                local pBtn = EABR._providerCastBtn
+                if pBtn then
+                    local p = db.profile.display
+                    local gc = p.glowColor or DEFAULT_GLOW_COLOR
+                    local sz = pBtn:GetWidth() or ICON_SIZE
+                    if pBtn._eabrGlowWrapper then pBtn._eabrGlowWrapper:Hide() end
+                    ApplyGlow(pBtn, p.glowType or 0, gc.r, gc.g, gc.b, sz)
+                end
+            end
+            if (combatIdx > 0 or providerEntry) and combatAnchor then
                 combatAnchor:Show()
                 EllesmereUI.SetElementVisibility(combatAnchor, true)
                 LayoutCombatIcons()
@@ -3610,6 +3820,7 @@ local function Refresh()
 
     -- OOC path: full secure button display
     _pt = EABR.ProfBegin("Display")
+    EABR.SyncProviderCastSpell()
     HideCombatIcons()
     HideCursorIcons()
     HideAllIcons()
@@ -4395,6 +4606,7 @@ function EABR:OnEnable()
         combatAnchor:SetFrameStrata(strata)
         for _, btn in pairs(iconPool) do btn:SetFrameStrata(strata) end
         for _, f in pairs(combatIconPool) do f:SetFrameStrata(strata) end
+        if EABR._providerCastBtn then EABR._providerCastBtn:SetFrameStrata(strata) end
     end
     _G._EABR_ApplyStrata = ApplyStrata
 
@@ -4459,10 +4671,10 @@ function EABR:OnEnable()
     _G._EABR_UpdateGroupAuraRegistration = UpdateGroupAuraRegistration
     UpdateGroupAuraRegistration()
 
-    -- Register spellcast tracking for Hunters (combat reminder for Hunter's Mark)
-    if GetPlayerClass() == "HUNTER" then
-        mainFrame:RegisterUnitEvent("UNIT_SPELLCAST_SUCCEEDED", "player")
-    end
+    -- Spellcast tracking: Hunter's Mark (player) + Create Soulwell (any unit).
+    mainFrame:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+
+    EABR.SyncProviderCastSpell()
 
     ---------------------------------------------------------------------------
     --  Range updates. UNIT_IN_RANGE_UPDATE mirrors the raid frames' range
@@ -4619,10 +4831,16 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
     end
 
     if e == "UNIT_SPELLCAST_SUCCEEDED" then
-        -- arg1 = unit ("player"), arg2 = castGUID, arg3 = spellID
-        if arg3 == 257284 then
+        -- arg3 (spellID) is often secret on nameplates; never compare secrets.
+        local spellID = arg3
+        if spellID == nil or isSecret(spellID) then return end
+        if spellID == 257284 and arg1 == "player" then
             _huntersMarkNeeded = false
             RequestRefresh()
+        elseif spellID == 29893 and EABR.HealthstoneReminderEnabled() then -- Create Soulwell
+            if arg1 == "player" or (arg1 and not isSecret(arg1) and (UnitInParty(arg1) or UnitInRaid(arg1))) then
+                EABR.NoteSoulwellCreated(arg1)
+            end
         end
         return
     end
@@ -4636,7 +4854,9 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
 
     if e == "PLAYER_ENTERING_WORLD" then
         wipe(_dismissedUntilLoad)
+        EABR._soulwell = nil
         EABR.ScanEatingState()
+        if not InCombatLockdown() then EABR.SyncProviderCastSpell() end
         RequestRefresh()
         -- Deferred refresh: GetInstanceInfo() can return stale data on the
         -- first frame after a loading screen. A second refresh after 0.5s
