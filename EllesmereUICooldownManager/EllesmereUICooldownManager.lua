@@ -4601,7 +4601,7 @@ ApplyShapeToCDMIcon = function(icon, shape, barData, ssb)
             if fd and fd.borderFrame then
                 fd.borderFrame:SetFrameLevel(barData.borderBehind and math.max(0, icon:GetFrameLevel() - 1) or (icon:GetFrameLevel() + 13))
             end
-            EllesmereUI.ApplyBorderStyle(bdrTarget, borderSz, brdR, brdG, brdB, brdA, texKey, barData.borderTextureOffset, barData.borderTextureOffsetY, barData.borderTextureShiftX, barData.borderTextureShiftY, "cdm", barData.borderThickness or "thin")
+            EllesmereUI.ApplyBorderStyle(bdrTarget, borderSz, brdR, brdG, brdB, brdA, texKey, barData.borderTextureOffset, barData.borderTextureOffsetY, barData.borderTextureShiftX, barData.borderTextureShiftY, "cdm", barData.borderThickness or "thin", true)
         end
 
         -- Restore icon texture -- fill the entire frame. The border renders
@@ -5017,8 +5017,8 @@ function ns.StyleCustomChargeText(icon, barKey)
     local iconScale = icon:GetScale() or 1
     if iconScale < 0.01 then iconScale = 1 end
     local scSize = (barData.stackCountSize or 11) / iconScale
-    local scX = barData.stackCountX or 0
-    local scY = barData.stackCountY or 0
+    local scX = (barData.stackCountX or 0) / iconScale
+    local scY = (barData.stackCountY or 0) / iconScale
     local scPoint = barData.stackCountPosition or "bottomright"
     if scPoint == "bottomleft" then scPoint = "BOTTOMLEFT"; scY = scY + 2
     elseif scPoint == "topright" then scPoint = "TOPRIGHT"
@@ -5281,7 +5281,7 @@ local function RefreshCDMIconAppearance(barKey)
         local bdrTgt = (fd and fd.borderFrame) or icon
         if fd and fd.borderFrame or EllesmereUI.PP.GetBorders(icon) then
             local textureKey = barData.borderTexture or "solid"
-            EllesmereUI.ApplyBorderStyle(bdrTgt, borderSize, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1, textureKey, barData.borderTextureOffset, barData.borderTextureOffsetY, barData.borderTextureShiftX, barData.borderTextureShiftY, "cdm", barData.borderThickness or "thin")
+            EllesmereUI.ApplyBorderStyle(bdrTgt, borderSize, barData.borderR or 0, barData.borderG or 0, barData.borderB or 0, barData.borderA or 1, textureKey, barData.borderTextureOffset, barData.borderTextureOffsetY, barData.borderTextureShiftX, barData.borderTextureShiftY, "cdm", barData.borderThickness or "thin", true)
         end
         -- Update background
         if bg then
@@ -5297,8 +5297,8 @@ local function RefreshCDMIconAppearance(barKey)
         local scR = (ssb and ssb.stackCountR) or barData.stackCountR or 1
         local scG = (ssb and ssb.stackCountG) or barData.stackCountG or 1
         local scB = (ssb and ssb.stackCountB) or barData.stackCountB or 1
-        local scX = (ssb and ssb.stackCountX) or barData.stackCountX or 0
-        local scY = (ssb and ssb.stackCountY) or barData.stackCountY or 0
+        local scX = ((ssb and ssb.stackCountX) or barData.stackCountX or 0) * fontScale
+        local scY = ((ssb and ssb.stackCountY) or barData.stackCountY or 0) * fontScale
         -- Stack/charge/item-count text anchor. Default bottom-right keeps the
         -- historical +2 vertical nudge so existing bars stay pixel-identical;
         -- top and center positions sit flush with no baseline nudge.
@@ -6696,15 +6696,56 @@ local function RebuildKeybindCache()
                     end
                     slot = i + (pg - 1) * 12
                 end
-                local slotType, id = GetActionInfo(slot)
+                local slotType, id, subType = GetActionInfo(slot)
                 local spellID
                 local fromMacro = false
                 if slotType == "spell" then
                     spellID = id
-                elseif slotType == "macro" and id then
-                    local macroSpell = GetMacroSpell(id)
-                    spellID = macroSpell or (id > 0 and id) or nil
+                elseif slotType == "macro" then
                     fromMacro = true
+                    if subType == "spell" then
+                        -- "Smart" single-spell macro: Blizzard already
+                        -- resolved it, and `id` here IS the spellID, not a
+                        -- macro index -- passing it to GetMacroSpell would
+                        -- look up the wrong thing.
+                        spellID = id
+                    else
+                        -- Everything else (single-item, mount/companion,
+                        -- multi-line/conditional...): `id` from GetActionInfo
+                        -- is NOT a reliable identifier here. Resolve the real
+                        -- macro index via its name instead (same workaround
+                        -- EllesmereUICdmHooks.lua's SlotSpellID already uses).
+                        local macroName = GetActionText(slot)
+                        local macroIndex = macroName and GetMacroIndexByName(macroName)
+                        if macroIndex and macroIndex > 0 then
+                            spellID = GetMacroSpell(macroIndex)
+                            if not spellID then
+                                -- Not a spell-shaped macro: pull the first
+                                -- /use target out of the macro body and
+                                -- resolve it as an item instead.
+                                local body = GetMacroBody and GetMacroBody(macroIndex)
+                                local target = body and body:match("/use!?%s+([^\r\n]+)")
+                                if target then
+                                    target = target:gsub("^%[.-%]%s*", ""):match("^%s*(.-)%s*$")
+                                    -- "item:NNNN" is macro-only shorthand for
+                                    -- targeting an itemID directly. It is NOT
+                                    -- a valid GetItemInfoInstant input (that
+                                    -- wants a bare itemID, item name, or a
+                                    -- full item link) -- pull the numeric ID
+                                    -- out ourselves instead of handing the
+                                    -- literal "item:NNNN" string to it.
+                                    local itemID = target:match("^item:(%d+)")
+                                    itemID = itemID and tonumber(itemID)
+                                    if not itemID and not tonumber(target) then
+                                        itemID = C_Item and C_Item.GetItemInfoInstant and C_Item.GetItemInfoInstant(target)
+                                    end
+                                    if itemID then
+                                        _SetKeybind(-itemID, FormatKeybindKey(key), true)
+                                    end
+                                end
+                            end
+                        end
+                    end
                 elseif slotType == "item" and id then
                     -- Store under negated itemID (-id) to match the FC
                     -- convention for item presets/trinkets.

@@ -1118,7 +1118,7 @@ local DEFAULTS = {
             bgR         = 1, bgG = 1, bgB = 1, bgA = 0.1,
             showText    = true,
             showTextOnlyIfNoPower = false,  -- only show the resource text while the power bar is hidden (see IsPowerBarHidden)
-            showPercent = true,
+            showPercent = false,  -- secondary "Show %": OFF (default) = current / max, ON = percent (Maelstrom/Insanity/Focus/Astral Power bars). Default OFF restores the pre-8.4.9 value display; 8.4.9 accidentally forced percent in combat for all four bars.
             showMaxStacks = true,
             textSize    = 11,
             textR       = 1, textG = 1, textB = 1,
@@ -1862,6 +1862,7 @@ local function RegisterUnlockElements()
             setWidth = function(_, w) SS().width = PP.Snap(w); Rebuild() end,
             setHeight = function(_, h) SS().height = PP.Snap(h); Rebuild() end,
             isAnchored = function() local s = S(); return s.anchorTo and s.anchorTo ~= "none" end,
+            keepMoverWhenAnchored = true,
             onLiveMove = LiveMove,
             savePos = save, loadPos = load, clearPos = clear, applyPos = apply,
         })
@@ -1882,6 +1883,7 @@ local function RegisterUnlockElements()
             setWidth = function(_, w) SS().width = PP.Snap(w); Rebuild() end,
             setHeight = function(_, h) SS().height = PP.Snap(h); Rebuild() end,
             isAnchored = function() local s = S(); return s.anchorTo and s.anchorTo ~= "none" end,
+            keepMoverWhenAnchored = true,
             onLiveMove = LiveMove,
             savePos = save, loadPos = load, clearPos = clear, applyPos = apply,
         })
@@ -1907,6 +1909,7 @@ local function RegisterUnlockElements()
             setHeight = function(_, h) SS().pipHeight = PP.Snap(h); Rebuild() end,
             isHidden = function() local s = S(); return s.enabled == false or IsSpecDisabled(s) end,
             isAnchored = function() local s = S(); return s.anchorTo and s.anchorTo ~= "none" end,
+            keepMoverWhenAnchored = true,
             onLiveMove = LiveMove,
             savePos = save, loadPos = load, clearPos = clear, applyPos = apply,
         })
@@ -4717,45 +4720,53 @@ local function UpdateSecondaryResource()
             end
             -- Count text
             if sp.showText and secondaryFrame._countText then
+                local ct = secondaryFrame._countText
                 local percentSuffix = (sp.showPercent == false) and "" or "%"
-                if not tainted then
-                    if powerType == "BREWMASTER_STAGGER" then
-                        -- Show stagger as percentage of max health
+                -- The power-based bar resources treat "Show %" as a
+                -- value<->percent switch: OFF (the default) = the bare
+                -- current value (what these bars actually displayed before
+                -- 8.4.9 -- the old in-combat percent probe was secret and
+                -- always fell back to the raw value), ON = percent
+                -- (secret-safe via the ScaleTo100 declassifier; capped 0-100
+                -- by nature). The same mode now applies in and out of
+                -- instanced combat -- the old code flipped display with the
+                -- taint state. All modes use SetFormattedText, which renders
+                -- a secret value's digits engine-side, so they work in
+                -- instanced combat with no Lua compare/concat on the secret.
+                local pType = (powerType == "MAELSTROM_BAR") and PT.MAELSTROM
+                           or (powerType == "INSANITY_BAR") and PT.INSANITY
+                           or (powerType == "FOCUS_BAR") and PT.FOCUS
+                           or (powerType == "LUNAR_POWER_BAR") and PT.LUNAR_POWER
+                           or nil
+                if powerType == "BREWMASTER_STAGGER" then
+                    -- Stagger always shows a percentage of max health
+                    -- The "%" sign is the only thing "Show %" toggles here
+                    if not tainted then
                         local pct = maxC > 0 and (cur / maxC * 100) or 0
-                        secondaryFrame._countText:SetText(format("%d", pct) .. percentSuffix)
-                    elseif powerType == "IGNOREPAIN_BAR" then
-                        -- Text is driven per-frame by IP.UpdateText (viewer
-                        -- capture preferred, fill-width fallback). No-op here.
-                    elseif sp.showMaxStacks == false then
-                        -- Devourer with Show Max Stacks off: current count only.
-                        secondaryFrame._countText:SetFormattedText("%s", cur)
+                        ct:SetText(format("%d", pct) .. percentSuffix)
                     else
-                        -- Current / max. SetFormattedText renders the (possibly
-                        -- secret) current and keeps the clean max -- no Lua concat
-                        -- of a secret value (see the note at the primary bar).
-                        secondaryFrame._countText:SetFormattedText("%s / %s", cur, maxC)
+                        local cp = secondaryBar._staggerPctCache
+                        if cp then ct:SetText(format("%d", cp) .. percentSuffix) else ct:SetText("") end
                     end
+                elseif powerType == "IGNOREPAIN_BAR" then
+                    -- Text is driven per-frame by IP.UpdateText. No-op here.
+                elseif pType and sp.showPercent and UnitPowerPercent then
+                    -- Percent
+                    local pct = UnitPowerPercent("player", pType, true, CurveConstants and CurveConstants.ScaleTo100) or 0
+                    ct:SetFormattedText("%d%%", pct)
+                elseif pType then
+                    -- Value: bare current for the power bars (their pre-8.4.9
+                    -- display; no "/ max").
+                    ct:SetFormattedText("%s", cur)
+                elseif sp.showMaxStacks == false then
+                    -- Current count only (Devourer "Show Max Stacks" off).
+                    ct:SetFormattedText("%s", cur)
                 else
-                    -- Secret value path: percent through the ScaleTo100 curve
-                    -- (bare UnitPowerPercent returns a 0-1 fraction).
-                    local pType = (powerType == "MAELSTROM_BAR") and PT.MAELSTROM
-                               or (powerType == "INSANITY_BAR") and PT.INSANITY
-                               or (powerType == "FOCUS_BAR") and PT.FOCUS
-                               or (powerType == "LUNAR_POWER_BAR") and PT.LUNAR_POWER
-                               or nil
-                    if pType and UnitPowerPercent then
-                        local pct = UnitPowerPercent("player", pType, true, CurveConstants and CurveConstants.ScaleTo100) or 0
-                        -- SetFormattedText formats engine-side, so a SECRET
-                        -- percent still renders; Lua format()/concat on a
-                        -- secret would error instead.
-                        secondaryFrame._countText:SetFormattedText("%d%s", pct, percentSuffix)
-                    elseif powerType == "IGNOREPAIN_BAR" then
-                        -- Text is driven per-frame by IP.UpdateText. No-op here.
-                    elseif sp.showMaxStacks == false then
-                        secondaryFrame._countText:SetFormattedText("%s", cur)
-                    else
-                        secondaryFrame._countText:SetFormattedText("%s / %s", cur, maxC)
-                    end
+                    -- Current / max (Devourer default). SetFormattedText
+                    -- renders the (possibly secret) current and keeps the
+                    -- clean max -- no Lua concat of a secret value (see the
+                    -- note at the primary bar).
+                    ct:SetFormattedText("%s / %s", cur, maxC)
                 end
             end
         end
@@ -7300,6 +7311,73 @@ function ERB:ApplySmoothing()
     if secondaryBar then secondaryBar._smoothing = (_sCfg and _sCfg.smoothBars) and interp or nil end
 end
 
+-------------------------------------------------------------------------------
+--  Legacy "Anchor To" retirement
+--  The Bar Position "Anchor To" dropdown for the health/power/class resource
+--  bars was removed from the options UI in 4.9.8, but the runtime kept
+--  honoring profile values written before that (or imported via old profile
+--  strings). A leftover anchorTo still anchors the bar AND suppresses its
+--  unlock-mode mover, with no UI left to see or clear the setting. Retire it:
+--  once the anchored layout has real geometry, capture the bar's on-screen
+--  position as a normal free position (unlockPos), clear anchorTo, and
+--  rebuild -- the bar stays visually in place and gets its mover back.
+--  Geometry-dependent, so it runs from ApplyAll on the active profile rather
+--  than the data-migration registry. do-block + ns exposure: this file is at
+--  Lua's 200-local cap.
+do
+    local pending
+    local function LegacyAnchored()
+        local p = ERB.db and ERB.db.profile
+        if not p then return nil end
+        local list
+        local function add(s, f)
+            if s and s.anchorTo and s.anchorTo ~= "none" then
+                list = list or {}
+                list[#list + 1] = { cfg = s, frame = f }
+            end
+        end
+        add(p.health, healthBar)
+        add(p.primary, primaryBar)
+        add(p.secondary, secondaryFrame)
+        return list
+    end
+    function ns.MigrateLegacyAnchorTo()
+        if pending or (EllesmereUI and EllesmereUI._unlockActive) then return end
+        if not LegacyAnchored() then return end
+        pending = true
+        -- One frame later so ApplyBarAnchor's SetPoint has flushed and
+        -- GetCenter returns the anchored on-screen position.
+        C_Timer.After(0, function()
+            pending = nil
+            if EllesmereUI and EllesmereUI._unlockActive then return end
+            local list = LegacyAnchored()
+            if not list then return end
+            local uiS = UIParent:GetEffectiveScale()
+            local uiW, uiH = UIParent:GetWidth(), UIParent:GetHeight()
+            local cleared = false
+            for _, e in ipairs(list) do
+                local s, f = e.cfg, e.frame
+                -- Plain multi-value assignment: wrapping GetCenter in "f and"
+                -- would truncate it to one value and leave cy always nil.
+                local cx, cy
+                if f then cx, cy = f:GetCenter() end
+                if cx and cy then
+                    local r = f:GetEffectiveScale() / uiS
+                    s.unlockPos = {
+                        point = "CENTER", relPoint = "CENTER",
+                        x = cx * r - uiW * 0.5, y = cy * r - uiH * 0.5,
+                    }
+                end
+                -- Clear even without geometry (bar never laid out): defaults
+                -- position the bar; leaving anchorTo would re-suppress the mover.
+                s.anchorTo = nil
+                cleared = true
+            end
+            if cleared then ERB:ApplyAll() end
+        end)
+    end
+end
+
 function ERB:ApplyAll()
     local _, classFile = UnitClass("player")
     cachedClass = classFile
@@ -7333,6 +7411,7 @@ function ERB:ApplyAll()
     UpdateSecondaryResource()
     UpdateVisibility()
     self:ApplySmoothing()
+    if ns.MigrateLegacyAnchorTo then ns.MigrateLegacyAnchorTo() end
 
     -- Vehicle proxy: hide resource bars during full vehicle UI ([vehicleui] condition)
     -- Secure frame creation + RegisterStateDriver both need to happen outside combat

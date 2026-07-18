@@ -2076,7 +2076,12 @@ do
         local m = PP.mult
         if m == 1 then return x end
         local pixels = x / m
-        pixels = x > 0 and math.floor(pixels) or math.ceil(pixels)
+        -- Epsilon-guarded truncation: values saved by pixel-unit sliders sit
+        -- exactly ON a grid boundary (px * mult), and float dust from the
+        -- multiply/divide round trip can land them a hair below it -- without
+        -- the guard the floor drops a whole pixel. 0.001 px is far below any
+        -- legitimate mid-interval distance, so ordinary values are unaffected.
+        pixels = x > 0 and math.floor(pixels + 0.001) or math.ceil(pixels - 0.001)
         return pixels * m
     end
 
@@ -2996,6 +3001,9 @@ do
         return DEFAULT_LSM_OFFSET
     end
 
+    -- Textured border edgeSize per size step (1-4).
+    local EDGE_MAP = { 12, 16, 24, 32 }
+
     --- Check if a border texture uses scaled offset (edgeSize/2 base).
     function EllesmereUI.BorderTextureUsesScaleOffset(key)
         if not key or key == "" or key == "solid" then return false end
@@ -3043,7 +3051,17 @@ do
     --- offsetOverride/offsetYOverride: optional user override (nil = use per-addon or global default).
     --- shiftX/shiftY: optional user override (nil = use per-addon default or 0).
     --- addonKey/sizeKey: optional per-addon registry lookup key pair for defaults.
-    function EllesmereUI.ApplyBorderStyle(borderFrame, size, r, g, b, a, textureKey, offsetOverride, offsetYOverride, shiftX, shiftY, addonKey, sizeKey)
+    --- normalizeScale: opt-in, textured borders only. Cancels the frame's scale
+    ---   chain below UIParent so the border matches an unscaled frame's. Pass it
+    ---   ONLY where that scale is an implementation detail the caller already
+    ---   cancels elsewhere -- CDM cancels Blizzard's per-icon scale for the
+    ---   icon's size (iS = 1/iconScale) but not for its border, which is the bug
+    ---   this exists for. Never pass it where the scale is the user's intent
+    ---   (nameplate target/cast scale, buff-bar position scale): those borders
+    ---   are meant to scale with the frame, and because ratio is sampled once at
+    ---   style time, a frame whose scale changes afterwards would bake in a
+    ---   transient value.
+    function EllesmereUI.ApplyBorderStyle(borderFrame, size, r, g, b, a, textureKey, offsetOverride, offsetYOverride, shiftX, shiftY, addonKey, sizeKey, normalizeScale)
         local PP = EllesmereUI.PP
         if not PP or not borderFrame then return end
         a = a or 1
@@ -3104,8 +3122,20 @@ do
                 _bdBorderData[borderFrame] = bdFrame
             end
             bdFrame:SetFrameLevel(borderFrame:GetFrameLevel())
-            local EDGE_MAP = { 12, 16, 24, 32 }
-            local edgeSize = EDGE_MAP[size] or 12
+            -- edgeSize is in local units, so SetBackdrop renders it at
+            -- edgeSize x effectiveScale: a scaled frame draws a proportionally
+            -- scaled border. That is correct by default, hence opt-in only.
+            -- uiES/es is exactly 1 / (scale chain below UIParent), so ratio is
+            -- 1 (and everything below a no-op) for an unscaled frame at any
+            -- resolution or UI scale. The 0.01 floor mirrors CDM's own
+            -- iconScale guard and keeps a degenerate scale from exploding it.
+            local ratio = 1
+            if normalizeScale then
+                local eok, es = pcall(bdFrame.GetEffectiveScale, bdFrame)
+                local uiES = UIParent and UIParent:GetEffectiveScale() or 1
+                if eok and es and es > 0.01 and uiES > 0 then ratio = uiES / es end
+            end
+            local edgeSize = (EDGE_MAP[size] or EDGE_MAP[1]) * ratio
             -- Resolve offset/shift defaults: per-addon registry first, then global fallback.
             local adjX, adjY, sx, sy
             if addonKey and sizeKey then
@@ -3120,6 +3150,10 @@ do
                 sx   = shiftX or 0
                 sy   = shiftY or 0
             end
+            -- Same factor as edgeSize, or a normalized edge would be positioned
+            -- by offsets still in the frame's scaled units.
+            adjX, adjY = adjX * ratio, adjY * ratio
+            sx, sy = sx * ratio, sy * ratio
             -- Custom textures (scaleOffset): base = edgeSize/2 so border tracks
             -- the edge at any size, plus a small fine-tune adjustment.
             -- Other textures: absolute offset (no edgeSize base).
@@ -4527,7 +4561,9 @@ do
             -- If the game echoes the Fervor-of-Battle Slam as a real cast
             -- event, skip it -- the charge was already counted above. A
             -- player-pressed Slam can't land inside the 0.3 s window (GCD).
-            if spellID == 1464 and GetTime() < fobWindow then return end
+            -- 1269383: Master of Warfare replaces Slam with Heroic Strike,
+            -- so the echo carries that id instead.
+            if (spellID == 1464 or spellID == 1269383) and GetTime() < fobWindow then return end
             -- No sweep partner in range -> the game doesn't consume a charge
             if not EnemiesInReach(2) then return end
             stacks = max(0, stacks - SPENDERS[spellID])
@@ -4535,30 +4571,32 @@ do
         end
     end
 
+    -- NO aura validation here, on purpose. v8.4.9 tried to correct
+    -- prediction drift against the real buff (first by name, then by
+    -- C_UnitAuras.GetPlayerAuraBySpellID), treating a missing aura as
+    -- "buff gone" and wiping the stacks. But Sweeping Strikes (260708) is
+    -- NOT a whitelisted aura, and non-whitelisted player buffs are
+    -- invisible to the aura read surface -- verified in-game 2026-07-17:
+    -- with the buff visibly active, GetPlayerAuraBySpellID(260708)
+    -- returned nil and a GetAuraDataByIndex("player", i, "HELPFUL") sweep
+    -- enumerated zero auras. So any validation on this buff reads it as
+    -- absent and zeroes the bar (the v8.4.9 bug: stacks wiped in combat,
+    -- pinned at 0 in M+). Whitelisted buffs ARE readable -- see
+    -- GetMaelstromWeapon / GetSoulFragments below and the
+    -- NON_SECRET_SPELL_IDS catalogue + C_Secrets.ShouldSpellAuraBeSecret
+    -- probe in EllesmereUIAuraBuffReminders. If Blizzard ever whitelists
+    -- 260708, validation becomes possible again; until then the
+    -- cast-event prediction plus the duration timer IS the tracker.
     function EllesmereUI.GetSweepingStrikes()
         if not sweepKnown then return 0, 0 end
         if expiresAt and GetTime() >= expiresAt then
             stacks, expiresAt = 0, nil
         end
-        -- Validate prediction against the real aura to correct drift (the
-        -- reach probe is ~11 yd while the game sweeps within 8 yd of the
-        -- primary target). Direct spellID lookup: zero-alloc on a 0.1 s
-        -- poll, and safe under 12.x restrictions -- aura PRESENCE stays
-        -- readable in keys (same contract the TBB bind-miss fallback relies
-        -- on), while a secret applications count simply leaves the
-        -- prediction in charge.
-        if stacks > 0 and C_UnitAuras and C_UnitAuras.GetPlayerAuraBySpellID then
-            local aura = C_UnitAuras.GetPlayerAuraBySpellID(SWEEP)
-            if not aura then
-                stacks, expiresAt = 0, nil
-            else
-                local count = aura.applications
-                if count and not (issecretvalue and issecretvalue(count)) and count > 0 then
-                    stacks = count
-                end
-            end
-        end
-        return stacks, MaxStacks()
+        -- Clamp: a mid-window respec out of Improved drops MaxStacks 18->12
+        -- while the predicted stacks upvalue keeps its old value.
+        local m = MaxStacks()
+        if stacks > m then stacks = m end
+        return stacks, m
     end
 end
 
@@ -4996,6 +5034,11 @@ function EllesmereUI.MakeUnlockElement(opts)
         -- noSizeMatchTarget: other elements may NOT size-match TO this one.
         allowMatchSource  = opts.allowMatchSource,
         noSizeMatchTarget = opts.noSizeMatchTarget,
+        -- keepMoverWhenAnchored: elements whose isAnchored() reflects a module
+        -- option (e.g. ERB "Anchor To") still get a mover while anchored --
+        -- position-locked (no drag/nudge/anchor link), but resize and
+        -- width/height matching stay available.
+        keepMoverWhenAnchored = opts.keepMoverWhenAnchored,
     }
 end
 
@@ -10443,7 +10486,7 @@ end
 -------------------------------------------------------------------------------
 --  Slash commands
 -------------------------------------------------------------------------------
-EllesmereUI.VERSION = "8.4.9"
+EllesmereUI.VERSION = "8.5.1"
 
 -- Register this addon's version into a shared global table (taint-free at load time)
 if not _G._EUI_AddonVersions then _G._EUI_AddonVersions = {} end
@@ -11700,7 +11743,7 @@ initFrame:SetScript("OnEvent", function(self, event)
                     _, h = W:SectionHeader(parent, "LAYOUT", y);                                          y = y - h
                     _, h = W:Slider(parent, "Button Spacing", y, 0, 12, 1,
                         function() return dS[k].spacing end,
-                        function(v) dS[k].spacing = v end);                                              y = y - h
+                        function(v) dS[k].spacing = v end, nil, true);                                   y = y - h
                     _, h = W:Slider(parent, "Global Scale", y, 50, 200, 5,
                         function() return dS[k].scale end,
                         function(v) dS[k].scale = v end);                                                y = y - h
