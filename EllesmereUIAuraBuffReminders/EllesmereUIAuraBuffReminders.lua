@@ -347,7 +347,6 @@ local NON_SECRET_SPELL_IDS = {
 --  Pre-combat aura snapshot
 -------------------------------------------------------------------------------
 local _preCombatAuraCache = {}  -- [spellID] = true/false, snapshotted at REGEN_DISABLED
-local _preCombatWellFed = false -- Well Fed icon is secret in combat; snapshot presence OOC
 
 local function _isRuntimeNonSecret(id)
     if C_Secrets and C_Secrets.ShouldSpellAuraBeSecret then
@@ -368,17 +367,12 @@ local function SnapshotPlayerAuras()
     -- even out of combat); the whitelisted lookups above still work and the
     -- extras are simply skipped there.
     if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return end
-    _preCombatWellFed = false
     for i = 1, AURA_SCAN_LIMIT do
         local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
         if not aura then break end
         local sid = aura.spellId
         if sid and not isSecret(sid) and not NON_SECRET_SPELL_IDS[sid] then
             _preCombatAuraCache[sid] = true
-        end
-        local ic = aura.icon
-        if ic and not isSecret(ic) and ic == 136000 then
-            _preCombatWellFed = true
         end
     end
 end
@@ -690,38 +684,46 @@ local function _unitInRange(u)
     return vis == true
 end
 
--- Returns true if any in-range group member who BENEFITS from the buff is
--- missing it. `benefits` is an optional CLASS->true set (e.g. only int users
--- for Arcane Intellect); nil means every class benefits. The class gate runs
--- BEFORE the aura read so non-beneficiaries are skipped without scanning their
--- auras -- a net win over the unfiltered scan. UnitClass's class token is
--- non-secret for friendly group members.
-local function AnyGroupMemberMissingBuff(spellIDs, benefits)
-    local selfBenefits = not benefits or benefits[GetPlayerClass()]
-    if not IsInGroup() then return selfBenefits and not _unitHasBuff("player", spellIDs) end
-    if selfBenefits and _unitOk("player") and not _unitHasBuff("player", spellIDs) then return true end
+-- Count how many in-range beneficiaries have the buff vs how many should.
+-- `benefits` is an optional CLASS->true set (e.g. only int users for Arcane
+-- Intellect); nil means every class benefits. Returns have, total.
+local function CountGroupBuffCoverage(spellIDs, benefits)
+    local have, total = 0, 0
+    if not IsInGroup() then
+        if (not benefits or benefits[GetPlayerClass()]) and _unitOk("player") then
+            total = 1
+            if _unitHasBuff("player", spellIDs) then have = 1 end
+        end
+        return have, total
+    end
     if IsInRaid() then
         for i = 1, GetNumGroupMembers() do
             local u = "raid"..i
-            if _unitOk(u) and UnitIsPlayer(u) and not UnitIsUnit(u, "player") and _unitInRange(u) then
+            if _unitOk(u) and UnitIsPlayer(u) and _unitInRange(u) then
                 local _, class = UnitClass(u)
-                if (not benefits or benefits[class]) and not _unitHasBuff(u, spellIDs) then
-                    return true
+                if not benefits or benefits[class] then
+                    total = total + 1
+                    if _unitHasBuff(u, spellIDs) then have = have + 1 end
                 end
             end
         end
     else
+        if (not benefits or benefits[GetPlayerClass()]) and _unitOk("player") then
+            total = total + 1
+            if _unitHasBuff("player", spellIDs) then have = have + 1 end
+        end
         for i = 1, GetNumSubgroupMembers() do
             local u = "party"..i
             if _unitOk(u) and UnitIsPlayer(u) and _unitInRange(u) then
                 local _, class = UnitClass(u)
-                if (not benefits or benefits[class]) and not _unitHasBuff(u, spellIDs) then
-                    return true
+                if not benefits or benefits[class] then
+                    total = total + 1
+                    if _unitHasBuff(u, spellIDs) then have = have + 1 end
                 end
             end
         end
     end
-    return false
+    return have, total
 end
 
 -- Returns true if the buff exists on any group member (any source).
@@ -1180,56 +1182,60 @@ local INKY_BLACK_BUFF = 185394  -- "Inky Blackness" buff (icon 136122); detected
 -------------------------------------------------------------------------------
 --  Helpers: Well Fed / Flask buff detection (by name, not spell ID secret)
 -------------------------------------------------------------------------------
+-- Skip consumable aura lookups entirely in combat / active M+ (unreadable
+-- there, and a hot path). Everywhere else callers try the read; if the scan
+-- fails or fields are secret they suppress instead of false-firing. Weapon
+-- enchants / raid buffs use other APIs and are not gated here.
+function EABR.ConsumablePresenceUnverifiable()
+    return InCombat() or InMythicPlusKey()
+end
+
 local function PlayerHasBuffByName(buffName)
-    -- 12.1: name scans are impossible under aura restrictions (the index
-    -- API errors; names are secret anyway). Cannot verify -> treat as
-    -- present so the reminder never false-fires in restricted content.
-    if EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted() then return true end
+    if EABR.ConsumablePresenceUnverifiable() then return true end
     if _AC.valid then
         _AC.ensureNames()
         return _AC.byName[buffName] or false
     end
+    local sawReadableName = false
     for i = 1, AURA_SCAN_LIMIT do
-        local aura = C_UnitAuras.GetAuraDataByIndex("player", i, "HELPFUL")
+        local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
+        if not ok then return true end -- can't verify absence
         if not aura then break end
         local aName = aura.name
-        if aName and not isSecret(aName) and aName == buffName then return true end
+        if aName and not isSecret(aName) then
+            sawReadableName = true
+            if aName == buffName then return true end
+        end
     end
+    if not sawReadableName then return true end -- names secret / empty: suppress
     return false
 end
 
 local function PlayerHasWellFed()
     if EABR._previewForce then return false end
-    -- The Well Fed aura has no whitelisted spell ID, so it is detected by icon
-    -- (136000) via an index scan. In restricted content the icon is secret and
-    -- unreadable, so it cannot be verified: assume fed rather than nag for the
-    -- whole instance (matches PlayerHasBuffByName and BuffReminders' policy).
-    -- The AurasRestricted() error-probe misses M+ (the scan can succeed with
-    -- secret fields there), so also gate on the M+/PvP content checks.
-    if (EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted())
-        or InMythicPlusKey() or InPvPInstance() then
-        return true
-    end
-    -- Open-world combat: the icon is secret but the pre-combat snapshot is
-    -- reliable there (REGEN_DISABLED scanned it unrestricted).
-    if InCombat() then
-        return _preCombatWellFed
-    end
-    -- OOC: live scan by icon; keep the snapshot fresh for the next combat.
-    _preCombatWellFed = false
+    if EABR.ConsumablePresenceUnverifiable() then return true end -- combat/M+: skip scan
+    -- Well Fed has no whitelisted spell ID (icon scan). If icons aren't
+    -- readable, suppress rather than false-fire "missing".
+    local sawReadableIcon = false
     for i = 1, AURA_SCAN_LIMIT do
         local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
-        if not ok or not aura then break end
+        if not ok then return true end -- can't verify absence
+        if not aura then break end
         local ic = aura.icon
-        if ic and not isSecret(ic) and ic == 136000 then
-            _preCombatWellFed = true
-            if IsUnderDuration(aura.duration, aura.expirationTime, "consumable") then
-                return false
+        if ic and not isSecret(ic) then
+            sawReadableIcon = true
+            if ic == 136000 then
+                local dur, exp = aura.duration, aura.expirationTime
+                if dur ~= nil and exp ~= nil and not isSecret(dur) and not isSecret(exp)
+                   and IsUnderDuration(dur, exp, "consumable") then
+                    return false
+                end
+                return true
             end
-            return true
         end
     end
-    return false
+    if not sawReadableIcon then return true end -- icons secret: suppress
+    return false -- readable scan, no Well Fed → missing
 end
 
 -- Eating channel aura (shared icon across all food types; matches BuffReminders).
@@ -1280,10 +1286,10 @@ end
 function EABR.GetEatingExpirationTime()
     if not _eatingAuraInstanceID then return nil end
     local ok, auraData = pcall(C_UnitAuras.GetAuraDataByAuraInstanceID, "player", _eatingAuraInstanceID)
-    if not ok or not auraData or not auraData.expirationTime or auraData.expirationTime == 0 then
-        return nil
-    end
-    return auraData.expirationTime
+    if not ok or not auraData then return nil end
+    local exp = auraData.expirationTime
+    if exp == nil or isSecret(exp) or exp == 0 then return nil end -- secret compare hard-errors
+    return exp
 end
 
 local function FormatEatingTime(seconds)
@@ -1296,7 +1302,8 @@ end
 
 local function PlayerHasFlaskBuff()
     if EABR._previewForce then return false end
-    -- Direct ID lookup for known flask buff IDs (works OOC and often in combat).
+    if EABR.ConsumablePresenceUnverifiable() then return true end -- combat/M+: skip lookups
+    -- Direct ID lookup for known flask buff IDs (works when the aura is readable).
     for id in pairs(FLASK_BUFF_ID_SET) do
         local ok, result = pcall(C_UnitAuras.GetPlayerAuraBySpellID, id)
         if ok and result ~= nil then
@@ -1315,40 +1322,32 @@ local function PlayerHasFlaskBuff()
             if FLASK_NAME_SET[aName] then return true end
         end
     end
-    -- Restricted content (M+/raid/PvP): the flask buff is not whitelisted, so
-    -- the lookups above return silent absence and the name scan is impossible.
-    -- We cannot confirm it is missing, so assume present rather than nag through
-    -- a whole key (matches PlayerHasBuffByName and BuffReminders' policy). The
-    -- AurasRestricted() error-probe misses M+, so also gate on M+/PvP content.
-    if (EllesmereUI.AuraKit and EllesmereUI.AuraKit.AurasRestricted())
-        or InMythicPlusKey() or InPvPInstance() then
-        return true
-    end
-    -- Open-world combat: flask IDs aren't reliably readable during lockdown, so use
-    -- the pre-combat snapshot (captured unrestricted at REGEN_DISABLED), like food.
-    if InCombat() then
-        for id in pairs(FLASK_BUFF_ID_SET) do
-            if _preCombatAuraCache[id] then return true end
-        end
-    end
     return false
 end
 
 local function PlayerHasInkyBlackness()
+    if EABR.ConsumablePresenceUnverifiable() then return true end -- combat/M+: skip scan
+    local sawReadable = false
     for i = 1, AURA_SCAN_LIMIT do
         local ok, aura = pcall(C_UnitAuras.GetAuraDataByIndex, "player", i, "HELPFUL")
-        if not ok then return false end
+        if not ok then return true end -- can't verify absence
         if not aura then break end
         local sid = aura.spellId
         local ic = aura.icon
+        if (sid and not isSecret(sid)) or (ic and not isSecret(ic)) then
+            sawReadable = true
+        end
         if (sid and not isSecret(sid) and sid == INKY_BLACK_BUFF)
         or (ic and not isSecret(ic) and ic == 136122) then
-            if IsUnderDuration(aura.duration, aura.expirationTime, "consumable") then
+            local dur, exp = aura.duration, aura.expirationTime
+            if dur ~= nil and exp ~= nil and not isSecret(dur) and not isSecret(exp)
+               and IsUnderDuration(dur, exp, "consumable") then
                 return false
             end
             return true
         end
     end
+    if not sawReadable then return true end -- fields secret: suppress
     return false
 end
 
@@ -2009,6 +2008,26 @@ function EABR.ApplyIconBagCount(f, count, outOfStock, substitute)
     end
 end
 
+-- Raid-buff group coverage ("12/15") on the same corner badge as item count.
+function EABR.ApplyIconGroupCoverage(f, have, total)
+    if not f then return end
+    EABR.CreateIconBagCountOverlay(f)
+    local fs = f._bagCount
+    if have ~= nil and total and total > 0 then
+        f._bagCountShown = true
+        f._outOfStock = nil
+        f._substitute = nil
+        fs:SetText(have .. "/" .. total)
+        fs:SetTextColor(1, 1, 1, 1)
+        EABR.SizeIconBagCount(f, f:GetWidth() or ICON_SIZE)
+        fs:Show()
+    else
+        f._bagCountShown = nil
+        fs:SetText("")
+        fs:Hide()
+    end
+end
+
 -------------------------------------------------------------------------------
 --  Cursor-attached combat icons — shown at cursor when cursorAttach is enabled.
 -------------------------------------------------------------------------------
@@ -2090,7 +2109,11 @@ local function ShowCombatIcon(iconIdx, m)
     EABR.ApplyEatingVisual(f, m)
     EABR.ApplyIconTooltipData(f, m)
     EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
-    EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    if m.groupTotal then
+        EABR.ApplyIconGroupCoverage(f, m.groupHave, m.groupTotal)
+    else
+        EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    end
     f:Show()
     combatActiveIcons[#combatActiveIcons+1] = f
 end
@@ -2183,7 +2206,11 @@ local function ShowCursorIcon(iconIdx, m)
     EABR.ApplyEatingVisual(f, m)
     EABR.ApplyIconTooltipData(f, m)
     EABR.ApplyIconQuality(f, (not m.isEating) and m.qualityAtlas or nil)
-    EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    if m.groupTotal then
+        EABR.ApplyIconGroupCoverage(f, m.groupHave, m.groupTotal)
+    else
+        EABR.ApplyIconBagCount(f, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    end
     f:Show()
     cursorActiveIcons[#cursorActiveIcons+1] = f
 end
@@ -2435,6 +2462,8 @@ do
         e.qualityAtlas = nil
         e.bagCount = nil
         e.substitute = nil
+        e.groupHave = nil
+        e.groupTotal = nil
         return e
     end
 
@@ -2555,7 +2584,11 @@ local function ShowIcon(iconIdx, m)
     end
     EABR.ApplyEatingVisual(btn, m)
     EABR.ApplyIconQuality(btn, (not m.isEating) and m.qualityAtlas or nil)
-    EABR.ApplyIconBagCount(btn, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    if m.groupTotal then
+        EABR.ApplyIconGroupCoverage(btn, m.groupHave, m.groupTotal)
+    else
+        EABR.ApplyIconBagCount(btn, (not m.isEating) and m.bagCount or nil, (not m.isEating) and m.desaturated or nil, (not m.isEating) and m.substitute or nil)
+    end
     btn:Show()
     activeIcons[#activeIcons+1] = btn
 end
@@ -2598,11 +2631,14 @@ do
                 end
                 if canCheck then
                     local isMissing = false
+                    local groupHave, groupTotal
                     if iCast then
                         if buff.check == "huntersMark" then
                             isMissing = inCombat and _huntersMarkNeeded
                         elseif othersMissing and buff.check == "raid" and (IsInGroup() or IsInRaid()) then
-                            isMissing = AnyGroupMemberMissingBuff(buff.buffIDs, buff.benefit and BUFF_BENEFICIARIES[buff.benefit])
+                            groupHave, groupTotal = CountGroupBuffCoverage(
+                                buff.buffIDs, buff.benefit and BUFF_BENEFICIARIES[buff.benefit])
+                            isMissing = groupTotal > 0 and groupHave < groupTotal
                         else
                             isMissing = not PlayerHasAuraByID(buff.buffIDs, "raidbuff")
                         end
@@ -2617,6 +2653,10 @@ do
                         if buff.check == "huntersMark" then e.unit = "target" end
                         e.cat = "raidbuff"; e.data = buff
                         e.dismissKey = buff.key and ("raidbuff:" .. buff.key) or nil
+                        if groupTotal then
+                            e.groupHave = groupHave
+                            e.groupTotal = groupTotal
+                        end
                         if doReceiver then
                             e.texture = Tex(buff.castSpell)
                             if EABR.ChatRequestEnabled() then
@@ -3122,9 +3162,9 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
 
         -- === CONSUMABLES (per-item "Show In" tier + open world; see ConsumableShows) ===
 
-        -- Augment Runes
+        -- Augment Runes: skip aura read in combat/M+; otherwise try then remind if missing
         if co.enabled.augment_rune and EABR.ConsumableShows(co, "augment_rune", inInstance) then
-            local hasRuneBuff = PlayerHasAuraByID(RUNE_BUFF_IDS)
+            local hasRuneBuff = EABR.ConsumablePresenceUnverifiable() or PlayerHasAuraByID(RUNE_BUFF_IDS)
             if not hasRuneBuff then
                 local runeItem = EABR._resolved.rune.itemID
                 if runeItem then
@@ -3140,7 +3180,7 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
             end
         end
 
-        -- Weapon Enchants (temp weapon enchant items)
+        -- Weapon Enchants (temp weapon enchant items; GetWeaponEnchantInfo is combat-safe)
         -- Skip if the player knows any imbue spell (Shaman imbues, Paladin rites).
         -- Rogues and DKs are NOT excluded: rogue poisons are temp enchants
         -- (detected by GetWeaponEnchantInfo), and DKs can use oils alongside runeforges.
@@ -3154,8 +3194,7 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
             end
         end
 
-        -- Flask / Food: always remind when not detected. Combat/M+ only skips the
-        -- early "show below" threshold (IsUnderDuration), not fully-missing icons.
+        -- Flask / Food: remind only when absence is verifiable (see ConsumablePresenceUnverifiable).
         if co.enabled.flask and EABR.ConsumableShows(co, "flask", inInstance) then
             if not PlayerHasFlaskBuff() then
                 local rf = EABR._resolved.flask
@@ -3212,8 +3251,6 @@ local specialsActive = EABR.SectionShows(co.specialsWhereToShow, inInstance)
                 local currentZone = tostring(C_Map.GetBestMapForUnit("player") or 0)
                 if co._inkyZoneSet[currentZone] then
                     local hasPotion = EABR._resolved.inky.hasPotion
-                    -- Detect the "Inky Blackness" buff by scanning auras (see PlayerHasInkyBlackness),
-                    -- mirroring flask/food. Suppressed in M+/PvP there since the aura is unreadable.
                     if not PlayerHasInkyBlackness() and hasPotion then
                         local e = AcquireEntry()
                         e.mode = "item"; e.itemID = INKY_BLACK_ITEM
@@ -4541,7 +4578,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
     if e == "PLAYER_REGEN_DISABLED" then
         -- Drop broad UNIT_AURA during combat unless we need group tracking.
         -- Evoker keeps broad for ownOnRaid cache updates; "others missing" keeps
-        -- broad so AnyGroupMemberMissingBuff gets timely refreshes.
+        -- broad so group buff coverage scans get timely refreshes.
         local rbSW = db and db.profile.raidBuffs and db.profile.raidBuffs.showWhen
         local keepBroad = _isEvokerOwnOnRaid or (rbSW and rbSW.othersMissing ~= false)
         if _needGroupAura and not keepBroad then _setBroad(false) end
@@ -4661,7 +4698,7 @@ mainFrame:SetScript("OnEvent", function(_, e, arg1, arg2, arg3)
     end
 
     -- Roster changes don't affect player buffs/consumables. Skip the
-    -- full refresh (which scans all group members via AnyGroupMemberMissingBuff).
+    -- full refresh (which scans all group members via CountGroupBuffCoverage).
     if e == "GROUP_ROSTER_UPDATE" then return end
 
     -- Bag CONTENT changes (BAG_UPDATE/_DELAYED) change item counts and which item
