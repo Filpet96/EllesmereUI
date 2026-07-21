@@ -758,45 +758,85 @@ end
     -- Back-compat full init (data + visual), used by the live re-apply path.
     local function _ttInit() _ttInitData(); _ttInitVisual() end
 
-    -- Context menu skinning
-    local _menuSkinned = {}
+    -- Context menus: UIParent overlay only (menu frames are pooled; parenting taints picks)
+    local _menuOverlay, _menuOverlayTarget
 
-    local function _menuSkinFrame(frame)
-        if not frame or frame:IsForbidden() or not _pmEnabled() then return end
-        for i = 1, _select("#", frame:GetRegions()) do
-            local region = _select(i, frame:GetRegions())
-            if region and region:IsObjectType("Texture") and not GetFFD(region).owned then
-                local RS = EllesmereUI.RESKIN
-                region:SetColorTexture(RS.BG_R, RS.BG_G, RS.BG_B, 1)
-                region:SetAlpha(RS.CTX_ALPHA)
-                region:ClearAllPoints()
-                region:SetPoint("TOPLEFT", frame, "TOPLEFT", 1, -1)
-                region:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", -1, 1)
-            end
-        end
-        _menuSkinned[frame] = true
-        _applyConfiguredBorder(frame, "popupMenu", 1)
+    local function _menuTagIsProtected(tag)
+        return tag == "MENU_GUILD_RANKS"
     end
 
-    local function _menuOnOpen(manager, _, menuDescription)
+    local function _menuDescriptionProtected(menuDescription)
+        if not menuDescription or type(menuDescription.GetTag) ~= "function" then return false end
+        local ok, tag = pcall(menuDescription.GetTag, menuDescription)
+        return ok and _menuTagIsProtected(tag)
+    end
+
+    local function _menuOpenTagsProtected()
+        if not Menu or not Menu.GetOpenMenuTags then return false end
+        local ok, tags = pcall(Menu.GetOpenMenuTags)
+        if not ok or type(tags) ~= "table" then return false end
+        for i = 1, #tags do
+            if _menuTagIsProtected(tags[i]) then return true end
+        end
+        return false
+    end
+
+    local function _menuOverlayHide()
+        _menuOverlayTarget = nil
+        if _menuOverlay then _menuOverlay:Hide() end
+    end
+
+    local function _menuOverlayEnsure()
+        if _menuOverlay then return _menuOverlay end
+        local host = CreateFrame("Frame", nil, UIParent)
+        host:EnableMouse(false)
+        host:Hide()
+        local bg = host:CreateTexture(nil, "BACKGROUND", nil, -8)
+        bg:SetAllPoints(host)
+        GetFFD(bg).owned = true
+        GetFFD(host).menuBg = bg
+        host:SetScript("OnUpdate", function(self)
+            local menu = _menuOverlayTarget
+            if not menu or not menu.IsShown or not menu:IsShown() then
+                _menuOverlayHide()
+                return
+            end
+            local l, b, w, h = menu:GetLeft(), menu:GetBottom(), menu:GetWidth(), menu:GetHeight()
+            if not (l and b and w and h) then return end
+            self:ClearAllPoints()
+            self:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", l, b)
+            self:SetSize(w, h)
+            if menu.GetFrameStrata then self:SetFrameStrata(menu:GetFrameStrata()) end
+            local fl = menu.GetFrameLevel and menu:GetFrameLevel() or 1
+            self:SetFrameLevel(math.max(0, fl - 1))
+        end)
+        _menuOverlay = host
+        return host
+    end
+
+    local function _menuSkinOpen(manager)
+        if _menuOpenTagsProtected() then
+            _menuOverlayHide()
+            return
+        end
+        local menu = manager.GetOpenMenu and manager:GetOpenMenu()
+        if not menu or (menu.IsForbidden and menu:IsForbidden()) then
+            _menuOverlayHide()
+            return
+        end
+        local host = _menuOverlayEnsure()
+        local RS = EllesmereUI.RESKIN
+        GetFFD(host).menuBg:SetColorTexture(RS.BG_R, RS.BG_G, RS.BG_B, RS.CTX_ALPHA)
+        _applyConfiguredBorder(host, "popupMenu", 1)
+        _menuOverlayTarget = menu
+        host:Show()
+    end
+
+    local function _menuOnContextOpen(manager, _, menuDescription)
         if not _pmEnabled() then return end
-        -- Defer out of the secure context. The post-hook runs inside
-        -- Blizzard's protected menu pipeline; touching Blizzard objects
-        -- here propagates taint to action bar buttons. 
-        -- By the next frame the secure execution
-        -- has finished so AddMenuAcquiredCallback is safe.
+        if _menuDescriptionProtected(menuDescription) then return end
         C_Timer.After(0, function()
-            local menu = manager.GetOpenMenu and manager:GetOpenMenu()
-            if menu then
-                _menuSkinFrame(menu)
-            end
-            if menuDescription and menuDescription.AddMenuAcquiredCallback then
-                menuDescription:AddMenuAcquiredCallback(function(frame)
-                    C_Timer.After(0, function()
-                        _menuSkinFrame(frame)
-                    end)
-                end)
-            end
+            _menuSkinOpen(manager)
         end)
     end
 
@@ -804,11 +844,12 @@ end
         if not _G.Menu or not _G.Menu.GetManager then return end
         local mgr = _G.Menu.GetManager()
         if not mgr then return end
-        hooksecurefunc(mgr, "OpenMenu", function(self, ownerRegion, menuDescription)
-            _menuOnOpen(self, ownerRegion, menuDescription)
-        end)
+        if mgr.CloseMenus then
+            hooksecurefunc(mgr, "CloseMenus", _menuOverlayHide)
+        end
+        -- OpenMenu (dropdowns / guild ranks) intentionally not hooked
         hooksecurefunc(mgr, "OpenContextMenu", function(self, ownerRegion, menuDescription)
-            _menuOnOpen(self, ownerRegion, menuDescription)
+            _menuOnContextOpen(self, ownerRegion, menuDescription)
         end)
     end
 
