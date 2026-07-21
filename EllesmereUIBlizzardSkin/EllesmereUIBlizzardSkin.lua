@@ -758,28 +758,10 @@ end
     -- Back-compat full init (data + visual), used by the live re-apply path.
     local function _ttInit() _ttInitData(); _ttInitVisual() end
 
-    -- Context menus: UIParent overlay only (menu frames are pooled; parenting taints picks)
+    -- Context menus: UIParent overlay only. Menu frames are pooled — parenting
+    -- chrome or AddMenuAcquiredCallback taints later protected picks
+    -- (SetGuildRankOrder via RankDropdown OpenMenu). Dropdown OpenMenu is not hooked.
     local _menuOverlay, _menuOverlayTarget
-
-    local function _menuTagIsProtected(tag)
-        return tag == "MENU_GUILD_RANKS"
-    end
-
-    local function _menuDescriptionProtected(menuDescription)
-        if not menuDescription or type(menuDescription.GetTag) ~= "function" then return false end
-        local ok, tag = pcall(menuDescription.GetTag, menuDescription)
-        return ok and _menuTagIsProtected(tag)
-    end
-
-    local function _menuOpenTagsProtected()
-        if not Menu or not Menu.GetOpenMenuTags then return false end
-        local ok, tags = pcall(Menu.GetOpenMenuTags)
-        if not ok or type(tags) ~= "table" then return false end
-        for i = 1, #tags do
-            if _menuTagIsProtected(tags[i]) then return true end
-        end
-        return false
-    end
 
     local function _menuOverlayHide()
         _menuOverlayTarget = nil
@@ -815,10 +797,6 @@ end
     end
 
     local function _menuSkinOpen(manager)
-        if _menuOpenTagsProtected() then
-            _menuOverlayHide()
-            return
-        end
         local menu = manager.GetOpenMenu and manager:GetOpenMenu()
         if not menu or (menu.IsForbidden and menu:IsForbidden()) then
             _menuOverlayHide()
@@ -832,9 +810,8 @@ end
         host:Show()
     end
 
-    local function _menuOnContextOpen(manager, _, menuDescription)
+    local function _menuOnContextOpen(manager)
         if not _pmEnabled() then return end
-        if _menuDescriptionProtected(menuDescription) then return end
         C_Timer.After(0, function()
             _menuSkinOpen(manager)
         end)
@@ -847,9 +824,8 @@ end
         if mgr.CloseMenus then
             hooksecurefunc(mgr, "CloseMenus", _menuOverlayHide)
         end
-        -- OpenMenu (dropdowns / guild ranks) intentionally not hooked
-        hooksecurefunc(mgr, "OpenContextMenu", function(self, ownerRegion, menuDescription)
-            _menuOnContextOpen(self, ownerRegion, menuDescription)
+        hooksecurefunc(mgr, "OpenContextMenu", function(self)
+            _menuOnContextOpen(self)
         end)
     end
 
